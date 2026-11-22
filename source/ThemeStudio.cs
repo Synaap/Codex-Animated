@@ -23,8 +23,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Theme Studio")]
 [assembly: AssemblyProduct("Theme Studio")]
 [assembly: AssemblyDescription("Theme library and look editor for the Animated launchers")]
-[assembly: AssemblyVersion("3.1.0.0")]
-[assembly: AssemblyFileVersion("3.1.0.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 internal static class ThemeStudioProgram
 {
@@ -135,12 +135,12 @@ internal sealed partial class StudioForm : Form
     private const string Origin = "https://studio.invalid/";
     private static App[] Apps { get { return AppTable.WithCustom(); } }
     private static readonly string[] Commands = {
-        "state", "saveTheme", "applyTheme", "createTheme", "renameTheme", "deleteTheme", "replaceWallpaper",
+        "state", "saveTheme", "applyTheme", "removeTheme", "setSplashAll", "createTheme", "renameTheme", "deleteTheme", "replaceWallpaper",
         "setAvatar", "clearAvatar", "setApp", "setAutostart", "startHelper", "playSplash",
         "exportTheme", "importTheme", "importAnyData", "createThemeData", "duplicateTheme",
         "openThemesFolder", "backupLibrary", "restoreLibrary",
         "saveLookPreset", "deleteLookPreset", "applyLookPreset",
-        "pickAppExe", "probeApp", "addCustomApp", "removeCustomApp",
+        "pickAppExe", "probeApp", "addCustomApp", "removeCustomApp", "presetApps",
         "useDesktopWallpaper", "pasteImage", "importFolder",
         "cropAvatar", "createGradient", "editGradient", "setPrefs", "seedStarters", "starterPreview",
         "checkReadability", "copyReport", "openLogFolder", "restartHelpers",
@@ -408,6 +408,8 @@ internal sealed partial class StudioForm : Form
                 int width = Number(q, "w", 160, 16, 2400);
                 string gif = Path.Combine(ThemeLibrary.Folder(theme), "wallpaper.gif");
                 if (width >= 480 && File.Exists(gif)) { type = "image/gif"; return ImageCodec.ReadBytes(gif); }
+                string apng = Path.Combine(ThemeLibrary.Folder(theme), "wallpaper.apng");
+                if (width >= 480 && File.Exists(apng)) { type = "image/png"; return ImageCodec.ReadBytes(apng); }
                 return ScaledWallpaper(theme, width);
             }
             if (s[1] == "avatar")
@@ -848,6 +850,16 @@ internal sealed partial class StudioForm : Form
         return "theme";
     }
 
+    // Applying a theme through the studio is an explicit "on": if a remove had
+    // switched the artwork off, bring watching back so the theme actually shows.
+    private static void ApplyAndWatch(string name, App app)
+    {
+        ThemeLibrary.ApplyForMode(name, app.SettingsDirectory,
+            SlotFor(AppProfile.Load(app.SettingsDirectory, app.IsCustom)));
+        AppProfile profile = AppProfile.Load(app.SettingsDirectory, app.IsCustom);
+        if (!profile.Watch) { profile.Watch = true; profile.Save(); }
+    }
+
     private object AppList()
     {
         var list = new List<object>();
@@ -877,6 +889,8 @@ internal sealed partial class StudioForm : Form
                     { "hideFullscreen", profile.HideFullscreen },
                     { "modeLight", light }, { "modeNight", night },
                     { "speed", profile.Speed }, { "style", profile.Style }, { "once", profile.SplashOnce }, { "watch", profile.Watch },
+                    { "gifSpeed", profile.GifSpeed }, { "gifCap", profile.GifCap }, { "gifPause", profile.GifPause },
+                    { "battSaver", profile.BattSaver }, { "slideSec", profile.SlideSec },
                     { "installed", app.Installed }, { "preview", app.Preview }, { "group", app.Group },
                     { "helperExists", helperExists },
                     { "helperRunning", HelperRunning(app) },
@@ -985,7 +999,8 @@ internal sealed partial class StudioForm : Form
             themes.Add(new Dictionary<string, object> {
                 { "name", name }, { "look", LookData(Look.Read(ini)) }, { "text", TextData(SplashText.Read(ini)) },
                 { "hasAvatar", File.Exists(Path.Combine(folder, "avatar.jpg")) },
-                { "gif", File.Exists(Path.Combine(folder, "wallpaper.gif")) }, { "stamp", ThemeLibrary.Stamp(name) },
+                { "gif", File.Exists(Path.Combine(folder, "wallpaper.gif")) }, { "apng", File.Exists(Path.Combine(folder, "wallpaper.apng")) },
+                { "slides", Directory.Exists(Path.Combine(folder, "slides")) }, { "stamp", ThemeLibrary.Stamp(name) },
                 { "gradient", ini.Get("gradient") ?? "" }, { "created", Directory.GetCreationTimeUtc(folder).ToString("o") },
                 { "accents", accents }, { "broken", broken }
             });

@@ -6,6 +6,35 @@ All notable changes to Animated Launchers (released as Codex Animated). Versions
 
 ## Unreleased
 
+## 3.2.0 — 2026-11-22
+
+Animation pacing controls, slideshow and APNG wallpapers, a next-theme hotkey,
+app presets, an optional boot chime and a battery-saver pause.
+
+- Playback controls per app: `gifSpeed` (25–400% of authored delays),
+  `gifCap` (10/15/20/30 fps floor), `gifPause` freeze and `slideSec` — all
+  editable in Theme Studio's app controls and applied live by the session.
+- A "Pause animation" toggle in each app's tray submenu.
+- Win+Alt+T cycles the artwork to the next theme in the app's pool.
+- Slideshow themes: a `slides\` folder of stills inside a theme plays through
+  the timeline pump as a uniform-delay animation (30 s default, 5 s–60 min).
+  Slides copy and clear with the theme, duplicate, back up, pack into
+  `.altheme`/`.albackup`, bust the theme stamp and badge "Slides" in the rail.
+- APNG wallpapers: `wallpaper.apng` decodes through a chunk-level decoder that
+  rebuilds each frame's `fcTL`+`IDAT`/`fdAT` as a standalone PNG and composites
+  blend/dispose ops onto the canvas — same pump, same budgets as GIF.
+- Battery-saver: the `battSaver` switch pauses the pump while the machine runs
+  on battery; a `PowerModeChanged` hook re-arms it when AC returns.
+- Boot sound: an optional `sound.wav` in a theme plays a chime when the startup
+  animation starts; it travels with themes, packs into `.altheme` and validates
+  RIFF/WAVE on import.
+- Theme Studio: animated themes (gif/APNG) preview real frames instead of the
+  still; a preset chip row under "Add your own app" probes known install paths
+  (Chrome, Spotify, Telegram and friends) for one-click custom apps.
+- Theme chip toggling: clicking a lit "Use on" chip removes the theme and
+  switches the app's artwork off (`watch=off`); applying re-enables it.
+- Spotify verified attachable as a custom app.
+
 ## 3.1.0 — 2026-11-22
 
 Animated wallpapers, eased drift, grouped app chips, a global startup-animation

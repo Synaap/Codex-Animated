@@ -758,10 +758,149 @@ internal static class LookTests
             ThemeLibrary.Apply(still, app);
             Check("gif: applying a still theme clears the app's gif", !File.Exists(Path.Combine(app, "wallpaper.gif")), null);
 
+            // A slides\ folder of stills plays through the same machinery.
+            string slidesTheme = ThemeLibrary.CreateFromJpeg(jpeg, "Slides theme");
+            string slidesDir = Path.Combine(ThemeLibrary.Folder(slidesTheme), "slides");
+            Directory.CreateDirectory(slidesDir);
+            File.WriteAllBytes(Path.Combine(slidesDir, "a.jpg"), jpeg);
+            File.WriteAllBytes(Path.Combine(slidesDir, "b.jpg"), jpeg);
+            File.WriteAllText(Path.Combine(slidesDir, "note.txt"), "not an image");
+            using (ImageCodec.GifArt art = ImageCodec.LoadSlides(slidesDir, out reason))
+                Check("slides: two stills load as frames", art != null && art.Count == 2, reason ?? "null art");
+            ThemeLibrary.Apply(slidesTheme, app);
+            Check("slides: apply copies the slides folder",
+                Directory.Exists(Path.Combine(app, "slides")) &&
+                File.Exists(Path.Combine(app, "slides", "a.jpg")), null);
+            ThemeLibrary.Apply(still, app);
+            Check("slides: applying a still theme clears the slides",
+                !Directory.Exists(Path.Combine(app, "slides")), null);
+            string oneDir = Path.Combine(work, "oneslide");
+            Directory.CreateDirectory(oneDir);
+            File.WriteAllBytes(Path.Combine(oneDir, "a.jpg"), jpeg);
+            using (ImageCodec.GifArt art = ImageCodec.LoadSlides(oneDir, out reason))
+                Check("slides: one picture stays a still", art == null && reason != null, reason ?? "loaded");
+
+            // APNG: rebuild two solid-colour PNGs' chunks into one animated file.
+            byte[] pngA = PngBytes(255, 0, 0), pngB = PngBytes(0, 0, 255);
+            byte[] apng = BuildApng(pngA, pngB);
+            Check("apng: signature detected", ImageCodec.IsApng(apng) && !ImageCodec.IsApng(pngA), null);
+            using (ImageCodec.GifArt art = ImageCodec.LoadApng(apng, out reason))
+            {
+                Check("apng: two frames decode", art != null && art.Count == 2, reason ?? "null art");
+                Check("apng: frames are red then blue",
+                    art != null && art.Frames[0].GetPixel(4, 4).R > 200 && art.Frames[1].GetPixel(4, 4).B > 200,
+                    art == null ? "null" : art.Frames[0].GetPixel(4, 4) + "/" + art.Frames[1].GetPixel(4, 4));
+                Check("apng: delay from fcTL", art != null && art.Delays[0] == 200 && art.Delays[1] == 200,
+                    art == null ? "null" : string.Join(",", art.Delays));
+            }
+            string apngTheme = ThemeLibrary.CreateFromJpeg(jpeg, "Apng theme", null, apng);
+            Check("apng: theme keeps wallpaper.apng",
+                File.Exists(Path.Combine(ThemeLibrary.Folder(apngTheme), "wallpaper.apng")), null);
+
             ThemeLibrary.SaveWallpaper(name, jpeg);
             Check("gif: a static wallpaper clears the theme's gif", !File.Exists(Path.Combine(folder, "wallpaper.gif")), null);
         }
         finally { ThemeLibrary.RootOverride = null; }
+    }
+
+    // A solid-colour PNG saved by GDI+, for building the test APNG.
+    private static byte[] PngBytes(byte r, byte g, byte b)
+    {
+        using (var bmp = new Bitmap(8, 8, PixelFormat.Format32bppArgb))
+        {
+            using (var g2 = Graphics.FromImage(bmp)) g2.Clear(Color.FromArgb(r, g, b));
+            using (var ms = new MemoryStream()) { bmp.Save(ms, ImageFormat.Png); return ms.ToArray(); }
+        }
+    }
+
+    // Walks a PNG's chunks; returns each entry's (type, data) so the test can
+    // repack IHDR/IDAT pieces into an APNG.
+    private static List<KeyValuePair<string, byte[]>> PngChunks(byte[] png)
+    {
+        var list = new List<KeyValuePair<string, byte[]>>();
+        int pos = 8;
+        while (pos + 12 <= png.Length)
+        {
+            int len = (png[pos] << 24) | (png[pos + 1] << 16) | (png[pos + 2] << 8) | png[pos + 3];
+            string type = Encoding.ASCII.GetString(png, pos + 4, 4);
+            byte[] data = new byte[len];
+            Buffer.BlockCopy(png, pos + 8, data, 0, len);
+            list.Add(new KeyValuePair<string, byte[]>(type, data));
+            pos += 12 + len;
+            if (type == "IEND") break;
+        }
+        return list;
+    }
+
+    private static void WriteBe(Stream s, int v)
+    {
+        s.WriteByte((byte)(v >> 24)); s.WriteByte((byte)(v >> 16)); s.WriteByte((byte)(v >> 8)); s.WriteByte((byte)v);
+    }
+
+    private static void ApngChunk(Stream s, string type, byte[] data)
+    {
+        WriteBe(s, data.Length);
+        byte[] name = Encoding.ASCII.GetBytes(type);
+        s.Write(name, 0, 4);
+        s.Write(data, 0, data.Length);
+        uint crc = 0xFFFFFFFFu;
+        foreach (byte x in name) crc = ((crc >> 8) & 0xFFFFFFu) ^ CrcTab[(crc ^ x) & 0xFF];
+        foreach (byte x in data) crc = ((crc >> 8) & 0xFFFFFFu) ^ CrcTab[(crc ^ x) & 0xFF];
+        WriteBe(s, (int)(crc ^ 0xFFFFFFFFu));
+    }
+
+    private static uint[] crcT;
+    private static uint[] CrcTab
+    {
+        get
+        {
+            if (crcT == null)
+            {
+                crcT = new uint[256];
+                for (uint n = 0; n < 256; n++)
+                {
+                    uint c = n;
+                    for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                    crcT[n] = c;
+                }
+            }
+            return crcT;
+        }
+    }
+
+    // Two full-canvas frames at 200 ms each: pngA through IDAT, pngB through
+    // fdAT with a sequence number prefix.
+    private static byte[] BuildApng(byte[] pngA, byte[] pngB)
+    {
+        byte[] ihdr = PngChunks(pngA).Find(p => p.Key == "IHDR").Value;
+        byte[] idatA = PngChunks(pngA).Find(p => p.Key == "IDAT").Value;
+        byte[] idatB = PngChunks(pngB).Find(p => p.Key == "IDAT").Value;
+        using (var ms = new MemoryStream())
+        {
+            ms.Write(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, 0, 8);
+            ApngChunk(ms, "IHDR", ihdr);
+            ApngChunk(ms, "acTL", new byte[] { 0, 0, 0, 2, 0, 0, 0, 0 });
+            ApngChunk(ms, "fcTL", Fctl(0, 8, 8));
+            ApngChunk(ms, "IDAT", idatA);
+            ApngChunk(ms, "fcTL", Fctl(1, 8, 8));
+            byte[] fdat = new byte[idatB.Length + 4];
+            WriteBe(new MemoryStream(fdat, 0, 4, true), 2);
+            Buffer.BlockCopy(idatB, 0, fdat, 4, idatB.Length);
+            ApngChunk(ms, "fdAT", fdat);
+            ApngChunk(ms, "IEND", new byte[0]);
+            return ms.ToArray();
+        }
+    }
+
+    private static byte[] Fctl(int seq, int w, int h)
+    {
+        var ms = new MemoryStream();
+        WriteBe(ms, seq); WriteBe(ms, w); WriteBe(ms, h);
+        WriteBe(ms, 0); WriteBe(ms, 0);                    // x, y offsets
+        ms.WriteByte(0); ms.WriteByte(2);                  // delay_num = 2
+        ms.WriteByte(0); ms.WriteByte(10);                 // delay_den = 10 -> 200 ms
+        ms.WriteByte(0); ms.WriteByte(0);                  // dispose none, blend source
+        return ms.ToArray();
     }
 
     private static void StarterCases()

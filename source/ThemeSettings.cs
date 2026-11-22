@@ -327,6 +327,17 @@ internal sealed class AppProfile
     // Theme (or ThemeLight/ThemeNight while that mode is active); "" means the folder
     // was not populated through ApplyForMode.
     internal string Applied = "";
+    // Animated wallpaper pacing: gifSpeed is a percent multiplier on the
+    // authored delays (100 = as authored, 50 = half speed, 200 = double),
+    // gifCap floors each frame delay so a fast gif can't exceed that many fps
+    // (0 = no cap), gifPause freezes the pump on the current frame.
+    internal int GifSpeed = 100;
+    internal int GifCap = 0;
+    internal bool GifPause = false;
+    // When on, the frame pump also pauses while the machine runs on battery.
+    internal bool BattSaver = false;
+    // Seconds each slide shows for a slides\ theme (5..3600, default 30).
+    internal int SlideSec = 30;
 
     private AppProfile(string root) { Root = root; }
 
@@ -364,6 +375,11 @@ internal sealed class AppProfile
         profile.ExtraDim = Look.Number(ini, "extraDim", 0, 0, 80);
         profile.HideFullscreen = !string.Equals((ini.Get("hideFullscreen") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
         profile.Applied = (ini.Get("applied") ?? "").Trim();
+        profile.GifSpeed = Look.Number(ini, "gifSpeed", 100, 25, 400);
+        profile.GifCap = Look.Number(ini, "gifCap", 0, 0, 30);
+        profile.GifPause = string.Equals((ini.Get("gifPause") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.BattSaver = string.Equals((ini.Get("battSaver") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.SlideSec = Look.Number(ini, "slideSec", 30, 5, 3600);
         return profile;
     }
 
@@ -405,6 +421,11 @@ internal sealed class AppProfile
             ini.Set("extraDim", Math.Max(0, Math.Min(80, ExtraDim)).ToString(CultureInfo.InvariantCulture));
             ini.Set("hideFullscreen", HideFullscreen ? "on" : "off");
             ini.Set("applied", Applied ?? "");
+            ini.Set("gifSpeed", Math.Max(25, Math.Min(400, GifSpeed)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("gifCap", Math.Max(0, Math.Min(30, GifCap)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("gifPause", GifPause ? "on" : "off");
+            ini.Set("battSaver", BattSaver ? "on" : "off");
+            ini.Set("slideSec", Math.Max(5, Math.Min(3600, SlideSec)).ToString(CultureInfo.InvariantCulture));
             ini.Save(path);
         });
     }

@@ -35,16 +35,21 @@ internal sealed partial class StudioForm
                 string name = ExistingTheme(m);
                 string target = Str(m, "app");
                 if (target == "all")
-                    foreach (App app in Apps)
-                        ThemeLibrary.ApplyForMode(name, app.SettingsDirectory,
-                            SlotFor(AppProfile.Load(app.SettingsDirectory, app.IsCustom)));
+                    foreach (App app in Apps) ApplyAndWatch(name, app);
                 else
                 {
                     App app = FindApp(target);
                     if (app == null) throw new ArgumentException("Unknown app.");
-                    ThemeLibrary.ApplyForMode(name, app.SettingsDirectory,
-                        SlotFor(AppProfile.Load(app.SettingsDirectory, app.IsCustom)));
+                    ApplyAndWatch(name, app);
                 }
+                return AppList();
+            }
+            case "removeTheme":
+            {
+                string name = ExistingTheme(m);
+                App app = FindApp(Str(m, "app"));
+                if (app == null) throw new ArgumentException("Unknown app.");
+                ThemeLibrary.Clear(name, app.SettingsDirectory);
                 return AppList();
             }
             case "createTheme":
@@ -78,7 +83,8 @@ internal sealed partial class StudioForm
                 string path = TestPath(m) ?? PickImage("Choose a wallpaper image");
                 if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
                 byte[] bytes = ImageCodec.ReadBytes(path);
-                if (!ImageCodec.IsGif(bytes)) using (ImageCodec.DecodeJpeg(ImageCodec.ToJpeg(bytes))) { }
+                if (!ImageCodec.IsGif(bytes) && !ImageCodec.IsApng(bytes))
+                    using (ImageCodec.DecodeJpeg(ImageCodec.ToJpeg(bytes))) { }
                 ThemeLibrary.SaveWallpaper(name, bytes);
                 ReapplyTo(name);
                 return State();
@@ -138,6 +144,11 @@ internal sealed partial class StudioForm
                 if (m.ContainsKey("nightDim")) profile.NightDim = Math.Max(0, Math.Min(80, Int(m, "nightDim", 0)));
                 if (m.ContainsKey("extraDim")) profile.ExtraDim = Math.Max(0, Math.Min(80, Int(m, "extraDim", 0)));
                 if (m.ContainsKey("hideFullscreen")) profile.HideFullscreen = Flag(m, "hideFullscreen");
+                if (m.ContainsKey("gifSpeed")) profile.GifSpeed = Math.Max(25, Math.Min(400, Int(m, "gifSpeed", 100)));
+                if (m.ContainsKey("gifCap")) profile.GifCap = Math.Max(0, Math.Min(30, Int(m, "gifCap", 0)));
+                if (m.ContainsKey("gifPause")) profile.GifPause = Flag(m, "gifPause");
+                if (m.ContainsKey("battSaver")) profile.BattSaver = Flag(m, "battSaver");
+                if (m.ContainsKey("slideSec")) profile.SlideSec = Math.Max(5, Math.Min(3600, Int(m, "slideSec", 30)));
                 profile.Save();
                 return AppList();
             }
@@ -306,6 +317,26 @@ internal sealed partial class StudioForm
                 if (cls != null) { report["running"] = true; report["windowClass"] = cls; }
                 else report["running"] = false;
                 return report;
+            }
+            case "presetApps":
+            {
+                // One-click registrations for programs people commonly add —
+                // only ones that exist on disk and are not already covered.
+                // Steam and OBS stay off the list on purpose: their real UI
+                // lives in helper processes the matcher cannot reach.
+                var presets = new List<object>();
+                foreach (var preset in PresetCandidates())
+                {
+                    string exe = null;
+                    foreach (string candidate in preset.Value)
+                        if (File.Exists(candidate)) { exe = candidate; break; }
+                    if (exe == null) continue;
+                    bool covered = false;
+                    foreach (App a in AppTable.WithCustom()) if (a.Owns(exe)) { covered = true; break; }
+                    if (covered) continue;
+                    presets.Add(new Dictionary<string, object> { { "name", preset.Key }, { "path", exe } });
+                }
+                return presets;
             }
             case "addCustomApp":
             {
@@ -637,5 +668,29 @@ internal sealed partial class StudioForm
             }
         }
         throw new ArgumentException("Unknown command.");
+    }
+
+    // Well-known install spots for the "Add your own app" preset chips. The
+    // first path that exists wins; entries stay out of the list entirely when
+    // nothing is installed or the app is already covered.
+    private static IEnumerable<KeyValuePair<string, string[]>> PresetCandidates()
+    {
+        string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        yield return new KeyValuePair<string, string[]>("Google Chrome", new[] {
+            Path.Combine(pf, @"Google\Chrome\Application\chrome.exe"), Path.Combine(pf86, @"Google\Chrome\Application\chrome.exe") });
+        yield return new KeyValuePair<string, string[]>("Microsoft Edge", new[] {
+            Path.Combine(pf86, @"Microsoft\Edge\Application\msedge.exe"), Path.Combine(pf, @"Microsoft\Edge\Application\msedge.exe") });
+        yield return new KeyValuePair<string, string[]>("Brave", new[] {
+            Path.Combine(local, @"BraveSoftware\Brave-Browser\Application\brave.exe"), Path.Combine(pf, @"BraveSoftware\Brave-Browser\Application\brave.exe") });
+        yield return new KeyValuePair<string, string[]>("Spotify", new[] { Path.Combine(roaming, @"Spotify\Spotify.exe") });
+        yield return new KeyValuePair<string, string[]>("Telegram", new[] { Path.Combine(roaming, @"Telegram Desktop\Telegram.exe") });
+        yield return new KeyValuePair<string, string[]>("Modrinth", new[] { Path.Combine(local, @"Modrinth App\Modrinth App.exe") });
+        yield return new KeyValuePair<string, string[]>("VLC", new[] {
+            Path.Combine(pf, @"VideoLAN\VLC\vlc.exe"), Path.Combine(pf86, @"VideoLAN\VLC\vlc.exe") });
+        yield return new KeyValuePair<string, string[]>("Notepad++", new[] {
+            Path.Combine(pf, @"Notepad++\notepad++.exe"), Path.Combine(pf86, @"Notepad++\notepad++.exe") });
     }
 }

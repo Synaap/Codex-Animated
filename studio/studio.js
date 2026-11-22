@@ -270,7 +270,8 @@
       const using = usedBy(t.name);
       const thumbImg = h('img', { alt: '', src: imgUrl('wallpaper', { theme: t.name, w: 160, v: t.stamp }) });
       const thumb = h('span', { class: `thumb${t.broken ? ' broken' : ''}` }, thumbImg,
-        t.gif ? h('i', { class: 'gif-badge', text: 'GIF' }) : null);
+        t.gif ? h('i', { class: 'gif-badge', text: 'GIF' }) : t.apng ? h('i', { class: 'gif-badge', text: 'APNG' }) :
+        t.slides ? h('i', { class: 'gif-badge', text: _('Slides') }) : null);
       thumbImg.addEventListener('error', () => thumb.classList.add('broken'));
       const fav = isFav(t.name);
       const star = h('button', {
@@ -380,7 +381,7 @@
     const tabs = segmented([['ai', _('AI')], ['other', _('Work in progress')]], tab, v => { S.useOnTab = v; refreshChips(); });
     const chips = S.apps.filter(app => app.group === tab).map(app => {
       const on = app.theme === t.name;
-      const chip = h('button', { type: 'button', class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: () => applyTo(app.id, app.name) },
+      const chip = h('button', { type: 'button', class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: () => on ? removeFrom(app.id, app.name) : applyTo(app.id, app.name) },
         on ? glyph(0xE73E) : null, app.name);
       return chip;
     });
@@ -393,6 +394,16 @@
     flushSave().then(() => call('applyTheme', { name: t.name, app: appId })).then(apps => {
       S.apps = apps; renderRail(); refreshChips();
       setStatus(appId === 'all' ? _('Applied to all apps') : _f('Applied to {0}', label));
+    }).catch(e => setStatus(_f('Couldn\'t apply. {0}', e.message), true));
+  }
+
+  // Clicking a chip that's already on takes the theme off the app: the copied
+  // files go and the app falls back to its bundled wallpaper.
+  function removeFrom(appId, label) {
+    const t = cur(); if (!t) return;
+    flushSave().then(() => call('removeTheme', { name: t.name, app: appId })).then(apps => {
+      S.apps = apps; renderRail(); refreshChips();
+      setStatus(_f('Removed from {0}', label));
     }).catch(e => setStatus(_f('Couldn\'t apply. {0}', e.message), true));
   }
 
@@ -528,7 +539,19 @@
     ui.art.style.webkitMaskComposite = masks.length > 1 ? 'source-in' : '';
     ui.art.style.maskComposite = masks.length > 1 ? 'intersect' : '';
     ui.art.style.mixBlendMode = S.compare || t.look.glow <= 0 ? '' : 'screen';
-    const wanted = S.compare ? imgUrl('wallpaper', { theme: t.name, w: 1920, v: t.stamp }) : imgUrl('look', lookParams(t));
+    // An animated theme previews the real gif; img/look is a still-only render,
+    // so the look's blur/dim/saturation get a CSS approximation instead. Tint
+    // stays unapproximated — it needs a colour pass no filter can fake well.
+    const filt = [];
+    if (!S.compare && (t.gif || t.apng)) {
+      if (t.look.blur > 0) filt.push(`blur(${(t.look.blur * 0.15).toFixed(1)}px)`);
+      const bright = 1 - (t.look.dim || 0) / 100 * 0.8 + (t.look.fade || 0) / 100 * 0.3;
+      if (Math.abs(bright - 1) > 0.01) filt.push(`brightness(${bright.toFixed(2)})`);
+      if (t.look.sat !== undefined && t.look.sat !== 100) filt.push(`saturate(${(t.look.sat / 100).toFixed(2)})`);
+    }
+    ui.art.style.filter = filt.join(' ');
+    const wanted = S.compare ? imgUrl('wallpaper', { theme: t.name, w: 1920, v: t.stamp }) :
+      (t.gif || t.apng) ? imgUrl('wallpaper', { theme: t.name, w: 1200, v: t.stamp }) : imgUrl('look', lookParams(t));
     ui.wanted = wanted;
     if (initial) { ui.shown = ''; }
     if (wanted === ui.shown) return;
@@ -1152,6 +1175,21 @@
       const extraDim = dimSeg(app.extraDim, _('Extra artwork dim'), 'extraDim');
       const hideFs = toggle(app.hideFullscreen !== false, _f('Hide the artwork while {0} is full screen or presenting', app.name), on =>
         call('setApp', { app: app.id, hideFullscreen: on }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+      const gifSel = (val, key, opts, label, dflt) => {
+        const s = h('select', { class: 'select', 'aria-label': _f('{0} for {1}', label, app.name) });
+        for (const [v, text] of opts) s.append(h('option', { value: v, text }));
+        s.value = String(val ?? dflt);
+        s.addEventListener('change', () =>
+          call('setApp', { app: app.id, [key]: +s.value }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+        return s;
+      };
+      const gifSpeed = gifSel(app.gifSpeed, 'gifSpeed', [['50', _('½×')], ['100', _('1×')], ['150', _('1½×')], ['200', _('2×')]], _('Wallpaper speed'), 100);
+      const gifCap = gifSel(app.gifCap, 'gifCap', [['0', _('As authored')], ['10', _('10 fps')], ['15', _('15 fps')], ['20', _('20 fps')], ['30', _('30 fps')]], _('Wallpaper frame cap'), 0);
+      const gifPause = toggle(app.gifPause === true, _('Freeze the animated wallpaper on its current frame'), on =>
+        call('setApp', { app: app.id, gifPause: on }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+      const battSaver = toggle(app.battSaver === true, _('Pause the animation while running on battery'), on =>
+        call('setApp', { app: app.id, battSaver: on }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+      const slideSec = gifSel(app.slideSec, 'slideSec', [['5', _('5 s')], ['15', _('15 s')], ['30', _('30 s')], ['60', _('1 min')], ['300', _('5 min')]], _('Slide seconds'), 30);
       const ctl = (label, el) => h('div', { class: 'ctl' }, h('span', { class: 'label', text: label }), h('div', { class: 'ctl-row' }, el));
       const appInfo = app.custom ? h('div', { class: 'app-exe', text: app.exe }) : null;
       const statusLine = app.status ? h('div', { class: 'app-status' + (app.problem ? ' has-problem' : ''), text: appStatusText(app) }) : null;
@@ -1162,14 +1200,18 @@
           ctl(_('Rotate themes'), rotate), ctl(_('Starred themes only'), favsOnly), ctl(_('Follow Windows'), follow), ctl(_('Light theme'), lightPick),
           ctl(_('Night theme'), nightPick), ctl(_('Night hours'), nightHours), ctl(_('Night dim'), nightDim), ctl(_('Extra dim'), extraDim),
           ctl(_('Hide in full screen'), hideFs),
+          ctl(_('Wallpaper speed'), gifSpeed), ctl(_('Frame cap'), gifCap), ctl(_('Freeze animation'), gifPause), ctl(_('On battery'), battSaver), ctl(_('Slide seconds'), slideSec),
           removeBtn ? h('div', { class: 'ctl' }, h('span', { class: 'label', text: _('Your app') }), h('div', { class: 'ctl-row' }, removeBtn)) : null)));
     }
     ui.appsStatus = h('div', { class: 'status', role: 'status', 'aria-live': 'polite' });
     wrap.append(h('section', { class: 'app-block' },
       h('div', { class: 'app-line1' }, h('span', { class: 'app-name', text: _('Add your own app') })),
       h('p', { class: 'lead', text: _('Pick any program\'s .exe file and it gets the same wallpaper and animation as the built-in apps. Works best with regular desktop windows.') }),
-      h('div', { class: 'app-controls' }, h('div', { class: 'ctl' },
-        h('span', { class: 'label', text: _('Program') }), h('div', { class: 'ctl-row' }, button(_('Choose .exe…'), 'primary', addCustomApp))))));
+      h('div', { class: 'app-controls' },
+        h('div', { class: 'ctl' },
+          h('span', { class: 'label', text: _('Program') }),
+          h('div', { class: 'ctl-row' }, button(_('Choose .exe…'), 'primary', addCustomApp))),
+        presetCtl())));
     wrap.append(ui.appsStatus);
     return wrap;
   }
@@ -1297,6 +1339,24 @@
         });
       });
     }).catch(e => setAppsStatus(_f('Couldn\'t add the app. {0}', e.message), true));
+  }
+
+  // "Common apps" chips: the bridge lists installed, not-yet-covered programs;
+  // one click registers them without the file picker.
+  function presetCtl() {
+    const row = h('div', { class: 'ctl-row preset-chips' }, h('span', { class: 'hint', text: _('Checking installed programs…') }));
+    call('presetApps').then(list => {
+      row.textContent = '';
+      if (!list || !list.length) { row.append(h('span', { class: 'hint', text: _('Nothing to suggest.') })); return; }
+      for (const p of list) row.append(button(p.name, 'secondary', () => {
+        call('addCustomApp', { name: p.name, path: p.path, preview: 'editor' }).then(state => {
+          if (state.error) { setAppsStatus(_f('Couldn\'t add it. {0}', state.error), true); return; }
+          mergeState(state); buildAll();
+          setAppsStatus(_f('{0} added. It shows the wallpaper once the helper picks it up.', p.name));
+        }).catch(e => setAppsStatus(_f('Couldn\'t add it. {0}', e.message), true));
+      }));
+    }).catch(() => { row.textContent = ''; });
+    return h('div', { class: 'ctl' }, h('span', { class: 'label', text: _('Common apps') }), row);
   }
 
   function removeCustomApp(id) {

@@ -78,6 +78,21 @@ internal static class ThemeLibrary
             string appGif = Path.Combine(appRoot, "wallpaper.gif");
             if (File.Exists(gif)) ImageCodec.SaveAtomic(appGif, ImageCodec.ReadBytes(gif));
             else File.Delete(appGif);
+            string apng = Path.Combine(folder, "wallpaper.apng");
+            string appApng = Path.Combine(appRoot, "wallpaper.apng");
+            if (File.Exists(apng)) ImageCodec.SaveAtomic(appApng, ImageCodec.ReadBytes(apng));
+            else File.Delete(appApng);
+            // A slides\ folder of stills travels with the theme the same way;
+            // a still theme removes any slides the app folder was left with.
+            string slides = Path.Combine(folder, "slides");
+            string appSlides = Path.Combine(appRoot, "slides");
+            if (Directory.Exists(appSlides)) Directory.Delete(appSlides, true);
+            if (Directory.Exists(slides)) CopyFolder(slides, appSlides);
+            // An optional startup chime travels with the theme the same way.
+            string chime = Path.Combine(folder, "sound.wav");
+            string appChime = Path.Combine(appRoot, "sound.wav");
+            if (File.Exists(chime)) ImageCodec.SaveAtomic(appChime, ImageCodec.ReadBytes(chime));
+            else File.Delete(appChime);
             string avatar = Path.Combine(folder, "avatar.jpg");
             string appAvatar = Path.Combine(appRoot, "avatar.jpg");
             if (File.Exists(avatar)) ImageCodec.SaveAtomic(appAvatar, ImageCodec.ReadBytes(avatar));
@@ -90,6 +105,29 @@ internal static class ThemeLibrary
             // style; a theme without one leaves the app's own default alone.
             if (profile.Text.Style.Length > 0) profile.Style = profile.Text.Style;
             profile.Theme = name;
+            profile.Save();
+        });
+    }
+
+    // Removes a theme from an app: the copied files go, every slot that
+    // referenced the theme clears, and the artwork switches off — removing a
+    // theme means no wallpaper at all, not the bundled fallback.
+    internal static void Clear(string name, string appRoot)
+    {
+        WithLock(appRoot, delegate {
+            File.Delete(Path.Combine(appRoot, "wallpaper.jpg"));
+            File.Delete(Path.Combine(appRoot, "wallpaper.gif"));
+            File.Delete(Path.Combine(appRoot, "wallpaper.apng"));
+            File.Delete(Path.Combine(appRoot, "avatar.jpg"));
+            File.Delete(Path.Combine(appRoot, "sound.wav"));
+            string slides = Path.Combine(appRoot, "slides");
+            if (Directory.Exists(slides)) Directory.Delete(slides, true);
+            AppProfile profile = AppProfile.Load(appRoot);
+            if (string.Equals(profile.Theme, name, StringComparison.OrdinalIgnoreCase)) profile.Theme = "";
+            if (string.Equals(profile.Applied, name, StringComparison.OrdinalIgnoreCase)) profile.Applied = "";
+            if (string.Equals(profile.ThemeLight, name, StringComparison.OrdinalIgnoreCase)) profile.ThemeLight = "";
+            if (string.Equals(profile.ThemeNight, name, StringComparison.OrdinalIgnoreCase)) profile.ThemeNight = "";
+            profile.Watch = false;
             profile.Save();
         });
     }
@@ -207,6 +245,8 @@ internal static class ThemeLibrary
         Directory.CreateDirectory(target);
         foreach (string file in Directory.GetFiles(source))
             File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+        foreach (string dir in Directory.GetDirectories(source))
+            CopyFolder(dir, Path.Combine(target, Path.GetFileName(dir)));
     }
 
     // Writes theme.ini (clamped, accent made legible) and copies look and text into every app on this theme.
@@ -303,7 +343,10 @@ internal static class ThemeLibrary
         byte[] bytes = ImageCodec.ReadBytes(imagePath);
         if (ImageCodec.IsGif(bytes))
             return CreateFromJpeg(ImageCodec.GifToJpeg(bytes),
-                Path.GetFileNameWithoutExtension(imagePath), bytes);
+                Path.GetFileNameWithoutExtension(imagePath), bytes, null);
+        if (ImageCodec.IsApng(bytes))
+            return CreateFromJpeg(ImageCodec.ApngToJpeg(bytes),
+                Path.GetFileNameWithoutExtension(imagePath), null, bytes);
         return CreateFromJpeg(ImageCodec.ToJpeg(bytes),
             Path.GetFileNameWithoutExtension(imagePath));
     }
@@ -312,10 +355,15 @@ internal static class ThemeLibrary
     // baseName names the theme; " 2", " 3" dedupes apply as usual.
     internal static string CreateFromJpeg(byte[] jpeg, string baseName)
     {
-        return CreateFromJpeg(jpeg, baseName, null);
+        return CreateFromJpeg(jpeg, baseName, null, null);
     }
 
     internal static string CreateFromJpeg(byte[] jpeg, string baseName, byte[] gif)
+    {
+        return CreateFromJpeg(jpeg, baseName, gif, null);
+    }
+
+    internal static string CreateFromJpeg(byte[] jpeg, string baseName, byte[] gif, byte[] apng)
     {
         Color suggestion = Color.Empty;
         using (Bitmap decoded = ImageCodec.DecodeJpeg(jpeg))
@@ -336,6 +384,7 @@ internal static class ThemeLibrary
             Directory.CreateDirectory(folder);
             ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), jpeg);
             if (gif != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.gif"), gif);
+            if (apng != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.apng"), apng);
             var ini = new IniFile();
             new Look().Write(ini);
             var text = new SplashText();
@@ -522,11 +571,15 @@ internal static class ThemeLibrary
     internal static string Stamp(string name)
     {
         long value = 17;
-        foreach (string file in new[] { "wallpaper.jpg", "wallpaper.gif", "avatar.jpg" })
+        foreach (string file in new[] { "wallpaper.jpg", "wallpaper.gif", "wallpaper.apng", "avatar.jpg", "sound.wav" })
         {
             var info = new FileInfo(Path.Combine(Folder(name), file));
             value = value * 31 + (info.Exists ? info.LastWriteTimeUtc.Ticks ^ info.Length : 0);
         }
+        string slides = Path.Combine(Folder(name), "slides");
+        if (Directory.Exists(slides))
+            foreach (FileInfo file in new DirectoryInfo(slides).GetFiles())
+                value = value * 31 + (file.LastWriteTimeUtc.Ticks ^ file.Length);
         return (value & long.MaxValue).ToString("x", CultureInfo.InvariantCulture);
     }
 
@@ -538,15 +591,24 @@ internal static class ThemeLibrary
         string folder = Folder(name);
         WithLock(folder, delegate {
             string gif = Path.Combine(folder, "wallpaper.gif");
+            string apng = Path.Combine(folder, "wallpaper.apng");
             if (ImageCodec.IsGif(bytes))
             {
                 ImageCodec.SaveAtomic(gif, bytes);
+                File.Delete(apng);
                 ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), ImageCodec.GifToJpeg(bytes));
+            }
+            else if (ImageCodec.IsApng(bytes))
+            {
+                ImageCodec.SaveAtomic(apng, bytes);
+                File.Delete(gif);
+                ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), ImageCodec.ApngToJpeg(bytes));
             }
             else
             {
                 ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), ImageCodec.ToJpeg(bytes));
                 File.Delete(gif);
+                File.Delete(apng);
             }
         });
     }

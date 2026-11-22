@@ -18,8 +18,10 @@ Themes, looks and the animation are edited in **Theme Studio**, and one theme li
 - **Five animation styles** — the original Full sequence, a three-second Card, Terminal, Manga and
   Minimal — with your own title, fonts, avatar frame and boot lines.
 - **Wallpaper inside the app**, on every window it opens. Clicks and typing go straight to the app.
-- **Moving wallpapers** — drop a `.gif` on a theme and it plays inside the app at the animation's
-  own pace; a still first frame is kept for the splash and previews.
+- **Moving wallpapers** — drop a `.gif` or an animated `.png` (APNG) on a theme and it plays
+  inside the app at the animation's own pace; a `slides\` folder of stills cycles them on a
+  timer. Per-app speed, frame-cap, freeze, slide dwell and a battery-saver pause are in Theme
+  Studio; a still first frame is kept for the splash and previews.
 - **Looks that keep text readable** — visibility, blur, dim, tint, a clear zone on one side, glow,
   vignette, a light-app mode, a subtle focus drift and fit modes down to crisp pixel art.
 - **Theme Studio** — live preview, undo, drag-and-drop import, shareable `.altheme` files, six starter
@@ -92,9 +94,10 @@ its own while an app window is in real full screen or Windows is in presentation
 
 Right-click the **Animated Launchers** icon in the notification area (it may be under the hidden
 icons) for a menu per app: **Theme**, **Next theme**, **Hide/Show artwork**, **More/Less visible**,
-the startup animation on or off, and **Stop watching**. **Win+Alt+H** hides or shows the artwork in
-every app at once. **Theme Studio…** opens the editor; **Exit** closes the helper and leaves the
-apps as they are.
+the startup animation on or off, **Pause animation**, and **Stop watching**. **Win+Alt+H** hides or
+shows the artwork in every app at once and **Win+Alt+T** jumps to the next theme. A theme can also
+carry a `sound.wav` chime that plays with the startup animation. **Theme Studio…** opens the editor;
+**Exit** closes the helper and leaves the apps as they are.
 
 ### Theme Studio
 

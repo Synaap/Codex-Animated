@@ -104,8 +104,23 @@ Updates 1 to 18 are done on `main` and ship together in the next release. [CHANG
 - Theme Studio speaks French — every label, button, status line and hint, with English as the automatic fallback
 - A Language select in Settings switches instantly (Same as Windows / English / Français); more languages slot into the same table
 
+## Shipped since 3.0.0
+
+### 3.1.0 — Animated wallpapers and drift
+- Animated GIF wallpapers on the opaque present path with a timeline pump and persistent-DIB fast path
+- Eased focus drift (`drift`), AI / Work in progress app chip tabs, and a master startup-animation toggle
+
+### 3.2.0 — Pacing, slideshows, APNG, presets and chime
+- Per-app wallpaper speed, FPS cap, freeze/pause (tray and Studio) and battery-saver pause
+- **Win+Alt+T** global next-theme hotkey
+- Slideshow themes (`slides\` folder of stills) and APNG (`wallpaper.apng`) animated wallpaper support
+- Optional startup chime (`sound.wav`) per theme
+- Animated GIF/APNG preview in Theme Studio, one-click app presets, and click-to-remove theme chips
+
 ## Next
 
+- **Theme gallery** — a curated community index browsable inside Theme Studio
+- **Video wallpapers (`.mp4`)** — Media Foundation decoding into the same frame pump
 - **Discord** (under review — its terms may not allow it)
 - **Reach:** signed programs, winget submission, more languages on the same table
 
@@ -113,9 +128,9 @@ Updates 1 to 18 are done on `main` and ship together in the next release. [CHANG
 
 Small trials that decide whether an idea is worth building:
 
-- Apps built on other technology, for example Spotify, Steam, Telegram and browsers
-- Moving wallpapers (GIF or short video), only if they stay light on the processor
-- A slight shift of the artwork with the mouse
+- Apps built on other technology — Chromium browsers, Spotify, Telegram and Tauri apps tested and attachable via custom apps; Steam/OBS UI helper processes stay out of reach
+- Moving wallpapers (GIF, APNG and slideshows shipped; short video under consideration)
+- A slight shift of the artwork with the mouse (shipped as eased focus drift)
 - The animation covering the app window exactly
 
 ## Not planned

@@ -46,6 +46,12 @@ internal sealed class AppSession : IDisposable
     private int gifIndex;
     private int gifDuration;
     private int gifStarted;
+    // Authored delays after the profile's speed multiplier and fps cap; null
+    // means use gif.Delays directly.
+    private int[] gifEff;
+    // True when gif holds a slides\ folder of stills rather than a real gif —
+    // its delays come from the profile's slide seconds, not the file.
+    private bool gifIsSlides;
     private string wallpaperStamp;
     // One slot per accepted app window, capped so a window factory cannot flood it.
     private readonly List<WindowSlot> slots = new List<WindowSlot>();
@@ -101,6 +107,7 @@ internal sealed class AppSession : IDisposable
             installTimer.Tick += delegate { Guard(CheckInstall, "install check"); };
             installTimer.Start();
             SystemEvents.UserPreferenceChanged += OnPreferenceChanged;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
             StartWatching();
             string fault = FaultKind();
             if (fault == "start") throw new InvalidOperationException("Forced fault (ANIMATED_FAULT=" + app.Id + ":start).");
@@ -478,6 +485,12 @@ internal sealed class AppSession : IDisposable
         modeCheckNow = true;
     }
 
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (marshal.IsHandleCreated && !marshal.IsDisposed)
+            marshal.BeginInvoke((MethodInvoker)delegate { Guard(UpdatePump, "power change"); });
+    }
+
     internal void ApplyTheme(string name)
     {
         try { ThemeLibrary.ApplyForMode(name, settingsDirectory, DesiredSlot()); }
@@ -507,6 +520,27 @@ internal sealed class AppSession : IDisposable
             Log("settings", "could not save the animation choice: " + error.Message);
             MessageBox.Show("Could not save the setting.\n\n" + error.Message,
                 app.Product, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    // The tray "Pause animation" toggle: persists gifPause; the settings
+    // watcher stops or resumes the pump on reload.
+    internal bool HasAnimation { get { return gif != null; } }
+    internal bool GifPaused { get { return profile.GifPause; } }
+    internal void SetGifPause(bool paused)
+    {
+        try
+        {
+            AppProfile fresh = AppProfile.LoadStrict(settingsDirectory, app.IsCustom);
+            fresh.GifPause = paused;
+            fresh.Save();
+            profile.GifPause = paused;
+            UpdatePump();
+        }
+        catch (Exception error)
+        {
+            if (!(error is IOException || error is UnauthorizedAccessException)) throw;
+            Log("settings", "could not save the animation pause choice: " + error.Message);
         }
     }
 
@@ -590,6 +624,7 @@ internal sealed class AppSession : IDisposable
         if (!active) return;
         if (string.Equals(name, "wallpaper.jpg", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "wallpaper.gif", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "wallpaper.apng", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "avatar.jpg", StringComparison.OrdinalIgnoreCase))
             ScheduleReload(ReloadDelay);
     }
@@ -683,6 +718,12 @@ internal sealed class AppSession : IDisposable
         profile.ExtraDim = next.ExtraDim;
         profile.HideFullscreen = next.HideFullscreen;
         profile.Applied = next.Applied;
+        profile.GifSpeed = next.GifSpeed;
+        profile.GifCap = next.GifCap;
+        profile.GifPause = next.GifPause;
+        profile.BattSaver = next.BattSaver;
+        profile.SlideSec = next.SlideSec;
+        ComputeGifDelays();
         // A gif frame is owned by gifFrames; only free looks' own renders.
         if (relook && oldSource != oldRaw && (gifFrames == null || Array.IndexOf(gifFrames, oldSource) < 0))
             oldSource.Dispose();
@@ -698,8 +739,14 @@ internal sealed class AppSession : IDisposable
     {
         var info = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.jpg"));
         var animated = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.gif"));
+        var apng = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.apng"));
+        var slides = new DirectoryInfo(Path.Combine(settingsDirectory, "slides"));
+        long slideStamp = 0;
+        if (slides.Exists) foreach (FileInfo file in slides.GetFiles()) slideStamp += file.LastWriteTimeUtc.Ticks + file.Length;
         return (info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "none") +
-            "|" + (animated.Exists ? animated.LastWriteTimeUtc.Ticks + ":" + animated.Length : "none");
+            "|" + (animated.Exists ? animated.LastWriteTimeUtc.Ticks + ":" + animated.Length : "none") +
+            "|" + (apng.Exists ? apng.LastWriteTimeUtc.Ticks + ":" + apng.Length : "none") +
+            "|" + slideStamp;
     }
 
     // Loads wallpaper.gif and renders every frame with the look; unloads when
@@ -707,9 +754,16 @@ internal sealed class AppSession : IDisposable
     private void TryLoadGif(Look look)
     {
         string path = Path.Combine(settingsDirectory, "wallpaper.gif");
+        string apngPath = Path.Combine(settingsDirectory, "wallpaper.apng");
+        string slides = Path.Combine(settingsDirectory, "slides");
         string reason = null;
         ImageCodec.GifArt art = null;
+        gifIsSlides = false;
+        // A real gif wins, then an APNG; otherwise a slides\ folder of stills
+        // animates the same pump with the profile's slide-seconds delay.
         if (File.Exists(path)) art = ImageCodec.LoadGif(path, out reason);
+        else if (File.Exists(apngPath)) art = ImageCodec.LoadApng(apngPath, out reason);
+        else if (Directory.Exists(slides)) { art = ImageCodec.LoadSlides(slides, out reason); gifIsSlides = art != null; }
         if (art != null && ArtworkLook.NeedsPixelPass(look))
         {
             art.Dispose(); art = null;
@@ -724,8 +778,7 @@ internal sealed class AppSession : IDisposable
         gif = art;
         RenderGifFrames(look);
         gifIndex = 0;
-        gifDuration = 0;
-        foreach (int delay in gif.Delays) gifDuration += delay;
+        ComputeGifDelays();
         gifStarted = Environment.TickCount;
         Log("settings", "wallpaper animation loaded (" + gif.Count + " frames, " +
             gif.Frames[0].Width + "x" + gif.Frames[0].Height + ")");
@@ -763,14 +816,14 @@ internal sealed class AppSession : IDisposable
     // actually showing artwork, so hidden, minimized or fullscreen apps cost 0%.
     private void FrameTick()
     {
-        if (gif == null || gifFrames == null || gifDuration <= 0 || !AnyShown()) { frameTimer.Stop(); return; }
+        if (gif == null || gifFrames == null || gifDuration <= 0 || PumpPaused() || !AnyShown()) { frameTimer.Stop(); return; }
         // Timeline pump: presenting through UpdateLayeredWindow costs tens of
         // ms per frame, so stepping exactly one frame per tick makes a short-
         // delay gif run late and judder. Instead jump the index to wherever
         // wall-clock says the animation should be, dropping frames when behind
         // so the loop keeps its authored duration.
         int elapsed = unchecked((int)(Environment.TickCount - gifStarted)) % gifDuration;
-        int[] d = gif.Delays;
+        int[] d = gifEff ?? gif.Delays;
         int acc = 0, idx = 0;
         while (idx < d.Length - 1 && acc + d[idx] <= elapsed) { acc += d[idx]; idx++; }
         if (idx != gifIndex)
@@ -783,21 +836,50 @@ internal sealed class AppSession : IDisposable
         frameTimer.Interval = Math.Max(15, acc + d[gifIndex] - elapsed);
     }
 
+    // Delays with the profile's pacing applied: gifSpeed scales every delay
+    // (percent) and gifCap floors each delay at 1000/fps.
+    private void ComputeGifDelays()
+    {
+        if (gif == null) { gifEff = null; gifDuration = 0; return; }
+        int[] d = new int[gif.Count];
+        int cap = profile.GifCap > 0 ? 1000 / profile.GifCap : 0;
+        for (int i = 0; i < d.Length; i++)
+        {
+            int authored = gifIsSlides ? profile.SlideSec * 1000 : gif.Delays[i];
+            int floor = gifIsSlides ? 2000 : 15;
+            int e = Math.Max(floor, authored * 100 / Math.Max(25, profile.GifSpeed));
+            if (cap > 0 && e < cap) e = cap;
+            d[i] = e;
+        }
+        gifEff = d;
+        gifDuration = 0;
+        foreach (int e in d) gifDuration += e;
+    }
+
     private bool AnyShown()
     {
         foreach (WindowSlot slot in slots) if (ShownFor(slot)) return true;
         return false;
     }
 
+    // The pump holds on a manual freeze, and on battery power when the app's
+    // battery-saver switch is on; either way the wallpaper keeps its last frame.
+    private bool PumpPaused()
+    {
+        return profile.GifPause ||
+            (profile.BattSaver && SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline);
+    }
+
     private void UpdatePump()
     {
-        bool want = gif != null && gifFrames != null && active && !shuttingDown && AnyShown();
+        bool want = gif != null && gifFrames != null && active && !shuttingDown && !PumpPaused() && AnyShown();
         if (want && !frameTimer.Enabled)
         {
+            int[] d = gifEff ?? gif.Delays;
             int before = 0;
-            for (int i = 0; i < gifIndex && i < gif.Delays.Length; i++) before += gif.Delays[i];
+            for (int i = 0; i < gifIndex && i < d.Length; i++) before += d[i];
             gifStarted = Environment.TickCount - before;
-            frameTimer.Interval = Math.Max(15, gif.Delays[gifIndex]);
+            frameTimer.Interval = Math.Max(15, d[gifIndex]);
             frameTimer.Start();
         }
         else if (!want && frameTimer.Enabled) frameTimer.Stop();
@@ -1225,6 +1307,7 @@ internal sealed class AppSession : IDisposable
         FreeGif();
         if (watcher != null) watcher.Dispose();
         SystemEvents.UserPreferenceChanged -= OnPreferenceChanged;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         if (foregroundHook != IntPtr.Zero) Native.UnhookWinEvent(foregroundHook);
         if (source != null && source != raw) source.Dispose();
         if (raw != null) raw.Dispose();

@@ -16,8 +16,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Animated Launchers")]
 [assembly: AssemblyProduct("Animated Launchers")]
 [assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Devin, Antigravity, Codex and Claude")]
-[assembly: AssemblyVersion("3.1.0.0")]
-[assembly: AssemblyFileVersion("3.1.0.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 internal static class Launcher
 {
@@ -212,6 +212,14 @@ internal static class Launcher
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Play(App app, string folder, IntPtr anchor, bool activate, out string failure)
     {
+        // A theme can ship a sound.wav chime; playing is best-effort and never
+        // blocks or breaks the animation.
+        try
+        {
+            string chime = Path.Combine(folder, "sound.wav");
+            if (File.Exists(chime)) new System.Media.SoundPlayer(chime).Play();
+        }
+        catch (Exception error) { AppLog.Write("animation", "the chime could not play: " + error.Message); }
         CoreWebView2Environment.SetLoaderDllFolderPath(PortableStartup.BundleDirectory);
         using (var splash = new Splash(app, folder, anchor, activate))
         {

@@ -40,8 +40,16 @@ internal static class ThemePack
             WriteEntry(zip, "wallpaper.jpg", ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg")));
             string gif = Path.Combine(folder, "wallpaper.gif");
             if (File.Exists(gif)) WriteEntry(zip, "wallpaper.gif", ImageCodec.ReadBytes(gif));
+            string apng = Path.Combine(folder, "wallpaper.apng");
+            if (File.Exists(apng)) WriteEntry(zip, "wallpaper.apng", ImageCodec.ReadBytes(apng));
+            string slides = Path.Combine(folder, "slides");
+            if (Directory.Exists(slides))
+                foreach (string slide in Directory.GetFiles(slides))
+                    WriteEntry(zip, "slides/" + Path.GetFileName(slide), ImageCodec.ReadBytes(slide));
             string avatar = Path.Combine(folder, "avatar.jpg");
             if (File.Exists(avatar)) WriteEntry(zip, "avatar.jpg", ImageCodec.ReadBytes(avatar));
+            string chime = Path.Combine(folder, "sound.wav");
+            if (File.Exists(chime)) WriteEntry(zip, "sound.wav", ImageCodec.ReadBytes(chime));
         }
     }
 
@@ -64,8 +72,16 @@ internal static class ThemePack
                 WriteEntry(zip, "Themes/" + name + "/wallpaper.jpg", ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg")));
                 string gif = Path.Combine(folder, "wallpaper.gif");
                 if (File.Exists(gif)) WriteEntry(zip, "Themes/" + name + "/wallpaper.gif", ImageCodec.ReadBytes(gif));
+                string apng = Path.Combine(folder, "wallpaper.apng");
+                if (File.Exists(apng)) WriteEntry(zip, "Themes/" + name + "/wallpaper.apng", ImageCodec.ReadBytes(apng));
+                string slides = Path.Combine(folder, "slides");
+                if (Directory.Exists(slides))
+                    foreach (string slide in Directory.GetFiles(slides))
+                        WriteEntry(zip, "Themes/" + name + "/slides/" + Path.GetFileName(slide), ImageCodec.ReadBytes(slide));
                 string avatar = Path.Combine(folder, "avatar.jpg");
                 if (File.Exists(avatar)) WriteEntry(zip, "Themes/" + name + "/avatar.jpg", ImageCodec.ReadBytes(avatar));
+                string chime = Path.Combine(folder, "sound.wav");
+                if (File.Exists(chime)) WriteEntry(zip, "Themes/" + name + "/sound.wav", ImageCodec.ReadBytes(chime));
             }
         }
     }
@@ -129,8 +145,13 @@ internal static class ThemePack
         byte[] gif = null;
         if (entries.ContainsKey("wallpaper.gif") && ImageCodec.IsGif(entries["wallpaper.gif"]))
             gif = entries["wallpaper.gif"];
+        byte[] apng = null;
+        if (entries.ContainsKey("wallpaper.apng") && ImageCodec.IsApng(entries["wallpaper.apng"]))
+            apng = entries["wallpaper.apng"];
         byte[] avatar = null;
         if (entries.ContainsKey("avatar.jpg")) avatar = WallpaperBytes(entries["avatar.jpg"]);
+        byte[] chime = null;
+        if (entries.ContainsKey("sound.wav") && IsWave(entries["sound.wav"])) chime = entries["sound.wav"];
         byte[] themeIni = null;
         if (entries.ContainsKey("theme.ini"))
         {
@@ -146,7 +167,22 @@ internal static class ThemePack
             if (themeIni != null) ImageCodec.SaveAtomic(Path.Combine(folder, "theme.ini"), themeIni);
             ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), wallpaper);
             if (gif != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.gif"), gif);
+            if (apng != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.apng"), apng);
             if (avatar != null) ImageCodec.SaveAtomic(Path.Combine(folder, "avatar.jpg"), avatar);
+            if (chime != null) ImageCodec.SaveAtomic(Path.Combine(folder, "sound.wav"), chime);
+            // Slides import normalized to JPEG the same way the wallpaper does.
+            int slideIndex = 0;
+            foreach (var pair in entries)
+            {
+                if (!pair.Key.StartsWith("slides/", StringComparison.OrdinalIgnoreCase)) continue;
+                string slideDir = Path.Combine(folder, "slides");
+                Directory.CreateDirectory(slideDir);
+                string slideBase = CleanName(Path.GetFileNameWithoutExtension(pair.Key.Substring(7)));
+                string target = Path.Combine(slideDir, slideBase + ".jpg");
+                if (File.Exists(target))
+                    target = Path.Combine(slideDir, slideBase + "-" + (++slideIndex).ToString(CultureInfo.InvariantCulture) + ".jpg");
+                ImageCodec.SaveAtomic(target, WallpaperBytes(pair.Value));
+            }
         }
         catch
         {
@@ -154,6 +190,14 @@ internal static class ThemePack
             throw;
         }
         return name;
+    }
+
+    // A WAV starts with a RIFF/WAVE header; anything else is not a chime.
+    private static bool IsWave(byte[] bytes)
+    {
+        return bytes != null && bytes.Length > 12 &&
+            bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F' &&
+            bytes[8] == 'W' && bytes[9] == 'A' && bytes[10] == 'V' && bytes[11] == 'E';
     }
 
     // Valid JPEG bytes are stored untouched so an export/import round trip keeps
@@ -209,7 +253,7 @@ internal static class ThemePack
     private static readonly Dictionary<string, bool> Known =
         new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase) {
             { "manifest.ini", true }, { "theme.ini", true }, { "wallpaper.jpg", true }, { "avatar.jpg", true },
-            { "wallpaper.gif", true } };
+            { "wallpaper.gif", true }, { "wallpaper.apng", true }, { "sound.wav", true } };
 
     private static Dictionary<string, byte[]> ReadKnown(ZipArchive zip, string prefix)
     {
@@ -218,7 +262,9 @@ internal static class ThemePack
         {
             if (!entry.FullName.StartsWith(prefix, StringComparison.Ordinal)) continue;
             string shortName = entry.FullName.Substring(prefix.Length);
-            if (shortName.Length == 0 || !Known.ContainsKey(shortName)) continue;
+            if (shortName.Length == 0 || !(Known.ContainsKey(shortName) ||
+                (shortName.StartsWith("slides/", StringComparison.OrdinalIgnoreCase) && shortName.Length > 7 &&
+                 shortName.IndexOf('/', 7) < 0 && shortName.IndexOf('\\', 7) < 0))) continue;
             long limit = shortName.EndsWith(".ini", StringComparison.OrdinalIgnoreCase) ? MaxTextBytes : MaxPackBytes;
             if (entry.Length > limit)
                 throw new InvalidDataException("\"" + shortName + "\" inside the file is too big.");

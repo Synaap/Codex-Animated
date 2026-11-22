@@ -50,6 +50,7 @@ internal sealed class HelperHost : ApplicationContext
         }
         WatchCustomApps();
         marshal.Hotkey += delegate { ToggleAllArtwork(); };
+        marshal.NextThemeKey += delegate { NextThemeAll(); };
         BuildMenu();
         tray.Text = "Animated Launchers";
         try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
@@ -261,6 +262,19 @@ internal sealed class HelperHost : ApplicationContext
         splash.Click += delegate { session.SetSplash(splash.Checked); };
         appItem.DropDownItems.Add(splash);
 
+        // Only meaningful while the theme animates: freeze the gif on its
+        // current frame without hiding the artwork.
+        if (session.HasAnimation)
+        {
+            var pause = new ToolStripMenuItem("Pause wallpaper animation")
+            {
+                Checked = session.GifPaused,
+                CheckOnClick = true
+            };
+            pause.Click += delegate { session.SetGifPause(pause.Checked); };
+            appItem.DropDownItems.Add(pause);
+        }
+
         appItem.DropDownItems.Add(new ToolStripSeparator());
         var watch = new ToolStripMenuItem(session.Watching ? "Stop watching " + app.Name : "Watch " + app.Name);
         watch.Click += delegate { session.SetWatch(!session.Watching); SyncRun(); };
@@ -372,6 +386,14 @@ internal sealed class HelperHost : ApplicationContext
         AppLog.Write("helper", "hotkey " + (anyVisible ? "hid" : "showed") + " the artwork");
     }
 
+    // Win+Alt+T: every active session steps to its next theme, the same as the
+    // tray's Next theme item on each app.
+    private void NextThemeAll()
+    {
+        foreach (var pair in sessions) pair.Value.RotateNow();
+        AppLog.Write("helper", "hotkey asked every app for its next theme");
+    }
+
     // The SynchronizingObject for the watchers and the WM_HOTKEY receiver.
     // Win+Alt+H is the global artwork toggle; a registration failure (another app
     // owns it) just disables the hotkey.
@@ -379,9 +401,10 @@ internal sealed class HelperHost : ApplicationContext
     {
         private const int HotkeyMessage = 0x0312;
         private const int NoRepeat = 0x4000, ModAlt = 0x0001, ModWin = 0x0008;
-        private bool registered;
+        private bool registered, registeredNext;
 
         internal event EventHandler Hotkey;
+        internal event EventHandler NextThemeKey;
 
         protected override void OnHandleCreated(EventArgs e)
         {
@@ -392,13 +415,21 @@ internal sealed class HelperHost : ApplicationContext
                 if (!(error is Win32Exception || error is System.Runtime.InteropServices.ExternalException)) throw;
                 registered = false;
             }
+            try { registeredNext = RegisterHotKey(Handle, 2, NoRepeat | ModAlt | ModWin, (int)Keys.T); }
+            catch (Exception error)
+            {
+                if (!(error is Win32Exception || error is System.Runtime.InteropServices.ExternalException)) throw;
+                registeredNext = false;
+            }
             if (!registered) AppLog.Write("helper", "the Win+Alt+H artwork hotkey is taken; it stays off");
+            if (!registeredNext) AppLog.Write("helper", "the Win+Alt+T theme hotkey is taken; it stays off");
         }
 
         protected override void OnHandleDestroyed(EventArgs e)
         {
             if (registered) UnregisterHotKey(Handle, 1);
-            registered = false;
+            if (registeredNext) UnregisterHotKey(Handle, 2);
+            registered = registeredNext = false;
             base.OnHandleDestroyed(e);
         }
 
@@ -406,7 +437,7 @@ internal sealed class HelperHost : ApplicationContext
         {
             if (m.Msg == HotkeyMessage)
             {
-                EventHandler handler = Hotkey;
+                EventHandler handler = m.WParam.ToInt32() == 2 ? NextThemeKey : Hotkey;
                 if (handler != null) handler(this, EventArgs.Empty);
                 return;
             }
