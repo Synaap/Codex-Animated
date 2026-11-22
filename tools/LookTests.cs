@@ -72,6 +72,7 @@ internal static class LookTests
         SlotReferenceCases();
         DetailCases();
         StarterCases();
+        GifCases();
         Console.WriteLine();
         Console.WriteLine(failures == 0 ? "ALL " + total + " CHECKS PASSED" : failures + " of " + total + " CHECKS FAILED");
         try { if (Directory.Exists(RunRoot)) Directory.Delete(RunRoot, true); }
@@ -145,12 +146,12 @@ internal static class LookTests
         Look again = Look.Read(file);
         Check("look: write/read round trip", again.Opacity == 22 && again.Blur == 7 && again.Dim == 9 && again.Tint == 61 &&
             again.FocusX == 3 && again.FocusY == 97 && again.TintColor.ToArgb() == round.TintColor.ToArgb() && again.SameRender(round), null);
-        var zone = new Look { Clear = 60, ClearSide = "left", Glow = 25 };
+        var zone = new Look { Clear = 60, ClearSide = "left", Glow = 25, Drift = 33 };
         var zoneFile = new IniFile();
         zone.Write(zoneFile);
         Look zoneBack = Look.Read(zoneFile);
-        Check("look: clear/glow round trip", zoneBack.Clear == 60 && zoneBack.ClearSide == "left" && zoneBack.Glow == 25 &&
-            zoneBack.SamePresent(zone), null);
+        Check("look: clear/glow/drift round trip", zoneBack.Clear == 60 && zoneBack.ClearSide == "left" && zoneBack.Glow == 25 &&
+            zoneBack.Drift == 33 && zoneBack.SamePresent(zone), null);
         var badSide = new IniFile();
         badSide.Set("clearSide", "sideways");
         Check("look: unknown clearSide falls back to none", Look.Read(badSide).ClearSide == "", null);
@@ -702,6 +703,65 @@ internal static class LookTests
         var written = new IniFile();
         new SplashText { Title = "T", Subtitle = "S", Accent = "#112233", Logs = new[] { "one", "two" } }.Write(written);
         Check("text: logs joined with pipe", written.Get("logs") == "one|two", written.Get("logs"));
+    }
+
+    private static void GifCases()
+    {
+        // Tiny embedded gifs: three solid frames with 100/200/50 ms delays, and
+        // a one-frame gif that must stay a still.
+        const string threeB64 =
+            "R0lGODlhKAAeAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAKAAeAAAIOgABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJsqXLlzAxBgQAIfkEARQAAQAsAAAAACgAHgCBAP8AAAAAAAAAAAAACDoAAQgcSLCgwYMIEypcyLChw4cQI0qcSLGixYsYM2rcyLGjx48gQ4ocSbKkyZMoU6pcybKly5cwMQYEACH5BAEFAAEALAAAAAAoAB4AgQAA/wAAAAAAAAAAAAg6AAEIHEiwoMGDCBMqXMiwocOHECNKnEixosWLGDNq3Mixo8ePIEOKHEmypMmTKFOqXMmypcuXMDEGBAA7";
+        const string oneB64 =
+            "R0lGODdhKAAeAIEAAAkJCQAAAAAAAAAAACwAAAAAKAAeAEAIOgABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJsqXLlzAxBgQAOw==";
+        byte[] three = Convert.FromBase64String(threeB64);
+        byte[] one = Convert.FromBase64String(oneB64);
+        Check("gif: signature detected", ImageCodec.IsGif(three) && !ImageCodec.IsGif(new byte[] { 1, 2, 3 }), null);
+        string reason;
+        using (ImageCodec.GifArt art = ImageCodec.LoadGif(three, out reason))
+        {
+            Check("gif: three frames decode", art != null && art.Count == 3, reason ?? "null art");
+            Check("gif: delays read and floored at 50 ms",
+                art != null && art.Delays[0] == 100 && art.Delays[1] == 200 && art.Delays[2] == 50,
+                art == null ? "null" : string.Join(",", art.Delays));
+            Check("gif: frame 2 pixels are the green frame",
+                art != null && art.Frames[1].GetPixel(10, 10).G > 200 && art.Frames[1].GetPixel(10, 10).R < 60,
+                art == null ? "null" : art.Frames[1].GetPixel(10, 10).ToString());
+        }
+        using (ImageCodec.GifArt art = ImageCodec.LoadGif(one, out reason))
+            Check("gif: a single frame stays a still", art == null && reason != null, reason ?? "loaded");
+        using (ImageCodec.GifArt art = ImageCodec.LoadGif(three, 40L * 30 * 2, out reason))
+            Check("gif: over the pixel budget falls back to still", art == null && reason == "it is too large to animate", reason ?? "loaded");
+        using (ImageCodec.GifArt art = ImageCodec.LoadGif(ImageCodec.EncodeJpeg(new Bitmap(4, 4)), out reason))
+            Check("gif: a jpeg is not a gif", art == null && reason == "it is not a GIF", reason ?? "loaded");
+
+        byte[] jpeg = ImageCodec.GifToJpeg(three);
+        using (Bitmap first = ImageCodec.DecodeJpeg(jpeg))
+            Check("gif: GifToJpeg writes the red first frame",
+                first.Width == 40 && first.GetPixel(10, 10).R > 180 && first.GetPixel(10, 10).G < 80,
+                first.Width + " " + first.GetPixel(10, 10));
+
+        string work = Temp("giflib");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            string name = ThemeLibrary.CreateFromJpeg(jpeg, "Gif theme", three);
+            string folder = ThemeLibrary.Folder(name);
+            Check("gif: theme holds wallpaper.gif and wallpaper.jpg",
+                File.Exists(Path.Combine(folder, "wallpaper.gif")) && File.Exists(Path.Combine(folder, "wallpaper.jpg")), null);
+
+            string app = Path.Combine(work, "Devin Animated");
+            Directory.CreateDirectory(app);
+            ThemeLibrary.Apply(name, app);
+            Check("gif: apply copies wallpaper.gif", File.Exists(Path.Combine(app, "wallpaper.gif")), null);
+
+            string still = ThemeLibrary.CreateFromJpeg(jpeg, "Still theme");
+            ThemeLibrary.Apply(still, app);
+            Check("gif: applying a still theme clears the app's gif", !File.Exists(Path.Combine(app, "wallpaper.gif")), null);
+
+            ThemeLibrary.SaveWallpaper(name, jpeg);
+            Check("gif: a static wallpaper clears the theme's gif", !File.Exists(Path.Combine(folder, "wallpaper.gif")), null);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
     }
 
     private static void StarterCases()

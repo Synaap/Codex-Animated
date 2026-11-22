@@ -373,6 +373,21 @@ return out;
     Check $dropOk 'dropping a theme file imports it' (Short $r)
     Check (Test-Path -LiteralPath (Join-Path $themes 'Seed 3\wallpaper.jpg')) 'the imported theme folder exists' ''
 
+    # An animated wallpaper: drop gif bytes, export the theme, re-import it.
+    $gifB64 = 'R0lGODlhKAAeAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAKAAeAAAIOgABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJsqXLlzAxBgQAIfkEARQAAQAsAAAAACgAHgCBAP8AAAAAAAAAAAAACDoAAQgcSLCgwYMIEypcyLChw4cQI0qcSLGixYsYM2rcyLGjx48gQ4ocSbKkyZMoU6pcybKly5cwMQYEACH5BAEFAAEALAAAAAAoAB4AgQAA/wAAAAAAAAAAAAg6AAEIHEiwoMGDCBMqXMiwocOHECNKnEixosWLGDNq3Mixo8ePIEOKHEmypMmTKFOqXMmypcuXMDEGBAA7'
+    $r = Send-AsyncEval ("Promise.resolve(Uint8Array.from(atob('$gifB64'), c => c.charCodeAt(0))).then(a => window.__studio.dropped(new File([a], 'dropped-anim.gif', { type: 'image/gif' })))")
+    Check ($r -and $r.Contains('"value":true')) 'dropping a gif makes an animated theme' (Short $r)
+    Check ((Test-Path -LiteralPath (Join-Path $themes 'dropped-anim\wallpaper.gif')) -and
+           (Test-Path -LiteralPath (Join-Path $themes 'dropped-anim\wallpaper.jpg'))) 'the theme holds the gif and its first frame' ''
+
+    $gifPack = Join-Path $Out 'anim.altheme'
+    $r = Send-AsyncEval "window.__studio.call('exportTheme', { name: 'dropped-anim', path: '$($gifPack -replace '\\','/')' })"
+    Check ($r -and $r.Contains('"ok":true')) 'exportTheme packs the animated theme' (Short $r)
+    $r = Send-AsyncEval "window.__studio.call('importTheme', { path: '$($gifPack -replace '\\','/')' })"
+    Check ($r -and $r.Contains('"imported"')) 'importTheme re-imports the animated theme' (Short $r)
+    Check (@(Get-ChildItem -LiteralPath $themes -Directory -Filter 'dropped-anim*' |
+        Where-Object { (Test-Path -LiteralPath (Join-Path $_.FullName 'wallpaper.gif')) }).Count -ge 2) 'the gif survives the export/import round trip' ''
+
     $r = Send-AsyncEval "window.__studio.call('backupLibrary', { path: '$($backupFile -replace '\\','/')' })"
     $backedUp = @(Get-ChildItem -LiteralPath $themes -Directory).Count
     Check ($r -and $r.Contains('"ok":true') -and (Test-Path -LiteralPath $backupFile)) 'backupLibrary writes the backup file' (Short $r)

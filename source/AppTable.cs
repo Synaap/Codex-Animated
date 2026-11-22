@@ -24,6 +24,10 @@ internal sealed class App
     // is null for these — any visible top-level window of the process matches.
     internal readonly string CustomExe;
     internal bool IsCustom { get { return CustomExe != null; } }
+    // "ai" for the agentic products, "other" for plain editors and custom apps —
+    // Theme Studio groups the Use-on chips by it.
+    internal string Group { get { return IsCustom ? "other" : Array.IndexOf(AiIds, Id) >= 0 ? "ai" : "other"; } }
+    private static readonly string[] AiIds = { "devin", "antigravity", "codex", "claude", "cursor", "kiro", "windsurf" };
     private volatile string[] directories;
 
     private App(AppKind kind, string id, string name, string executableName, string installFolder,

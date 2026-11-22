@@ -37,13 +37,13 @@ internal sealed partial class StudioForm
                 if (target == "all")
                     foreach (App app in Apps)
                         ThemeLibrary.ApplyForMode(name, app.SettingsDirectory,
-                            SlotFor(AppProfile.Load(app.SettingsDirectory)));
+                            SlotFor(AppProfile.Load(app.SettingsDirectory, app.IsCustom)));
                 else
                 {
                     App app = FindApp(target);
                     if (app == null) throw new ArgumentException("Unknown app.");
                     ThemeLibrary.ApplyForMode(name, app.SettingsDirectory,
-                        SlotFor(AppProfile.Load(app.SettingsDirectory)));
+                        SlotFor(AppProfile.Load(app.SettingsDirectory, app.IsCustom)));
                 }
                 return AppList();
             }
@@ -77,10 +77,9 @@ internal sealed partial class StudioForm
                 string name = ExistingTheme(m);
                 string path = TestPath(m) ?? PickImage("Choose a wallpaper image");
                 if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
-                byte[] jpeg = ImageCodec.ToJpeg(path);
-                using (ImageCodec.DecodeJpeg(jpeg)) { }
-                string target = Path.Combine(ThemeLibrary.Folder(name), "wallpaper.jpg");
-                ThemeLibrary.WithLock(ThemeLibrary.Folder(name), delegate { ImageCodec.SaveAtomic(target, jpeg); });
+                byte[] bytes = ImageCodec.ReadBytes(path);
+                if (!ImageCodec.IsGif(bytes)) using (ImageCodec.DecodeJpeg(ImageCodec.ToJpeg(bytes))) { }
+                ThemeLibrary.SaveWallpaper(name, bytes);
                 ReapplyTo(name);
                 return State();
             }
@@ -108,7 +107,7 @@ internal sealed partial class StudioForm
             {
                 App app = FindApp(Str(m, "app"));
                 if (app == null) throw new ArgumentException("Unknown app.");
-                AppProfile profile = AppProfile.LoadStrict(app.SettingsDirectory);
+                AppProfile profile = AppProfile.LoadStrict(app.SettingsDirectory, app.IsCustom);
                 if (m.ContainsKey("splash")) profile.SplashOnStart = Flag(m, "splash");
                 if (m.ContainsKey("speed")) profile.Speed = Math.Max(1, Math.Min(3, Int(m, "speed", 1)));
                 if (m.ContainsKey("once")) profile.SplashOnce = Flag(m, "once");
@@ -142,6 +141,18 @@ internal sealed partial class StudioForm
                 profile.Save();
                 return AppList();
             }
+            case "setSplashAll":
+            {
+                bool on = Flag(m, "on");
+                foreach (App app in Apps)
+                {
+                    AppProfile p = AppProfile.Load(app.SettingsDirectory, app.IsCustom);
+                    if (p.SplashOnStart == on) continue;
+                    p.SplashOnStart = on;
+                    p.Save();
+                }
+                return AppList();
+            }
             case "setAutostart":
             {
                 // One shared start-with-Windows entry plus this app's watch flag:
@@ -150,7 +161,7 @@ internal sealed partial class StudioForm
                 if (app == null) throw new ArgumentException("Unknown app.");
                 if (evalMode && Flag(m, "dryRun"))
                     return new Dictionary<string, object> { { "app", app.Id }, { "watch", Flag(m, "on") } };
-                AppProfile profile = AppProfile.LoadStrict(app.SettingsDirectory);
+                AppProfile profile = AppProfile.LoadStrict(app.SettingsDirectory, app.IsCustom);
                 profile.Watch = Flag(m, "on");
                 profile.Save();
                 AppTable.SyncRunValue(StudioFolder());
@@ -335,7 +346,7 @@ internal sealed partial class StudioForm
                 string folder = TestPath(m) ?? PickFolder();
                 if (folder == null) return new Dictionary<string, object> { { "cancelled", true } };
                 var created = new List<string>();
-                foreach (string pattern in new[] { "*.jpg", "*.jpeg", "*.png", "*.bmp" })
+                foreach (string pattern in new[] { "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif" })
                     foreach (string file in Directory.GetFiles(folder, pattern))
                     {
                         if (created.Count >= 64) break;
@@ -458,6 +469,7 @@ internal sealed partial class StudioForm
                 string target = Path.Combine(ThemeLibrary.Folder(name), "wallpaper.jpg");
                 ThemeLibrary.WithLock(ThemeLibrary.Folder(name), delegate {
                     ImageCodec.SaveAtomic(target, jpeg);
+                    File.Delete(Path.Combine(ThemeLibrary.Folder(name), "wallpaper.gif"));
                     string ini = Path.Combine(ThemeLibrary.Folder(name), "theme.ini");
                     var file = IniFile.LoadStrict(ini);
                     file.Set("gradient", spec.Format());

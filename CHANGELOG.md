@@ -4,6 +4,35 @@ All notable changes to Animated Launchers (released as Codex Animated). Versions
 [semantic versioning](https://semver.org/). Download releases from the
 [releases page](https://github.com/Synaap/Codex-Animated/releases).
 
+## Unreleased
+
+## 3.1.0 — 2026-11-22
+
+Animated wallpapers, eased drift, grouped app chips, a global startup-animation
+switch and a faster present path.
+
+- Animated wallpapers: a theme may ship `wallpaper.gif` — frames play on the
+  opaque present path (delays floored at 50 ms, single-frame and over-budget GIFs
+  fall back to a still) and a first-frame `wallpaper.jpg` is always kept beside it
+  for the splash and previews. Theme Studio accepts dropped/picked GIFs, badges
+  animated themes in the rail, and `.altheme` packs and `.albackup` backups carry
+  the GIF through export and import.
+- Timeline animation pump: the frame index tracks wall-clock against the GIF's
+  authored delays and drops frames when behind, so loops keep their real
+  duration instead of running slow. Animated frames draw straight into a
+  persistent DIB + memory DC (~2x faster per frame than the still path), letting
+  real GIF cadences play without stutter.
+- Drift: a new `drift` look key (0..100, Theme Studio "Fine tuning" slider) eases
+  the artwork focus point across the window — the measured-viable form of the E4
+  parallax experiment. Opaque present path only.
+- Theme Studio "Use on" chips are grouped behind AI / Work in progress tabs;
+  per-app theme state is unchanged and "All apps" still applies everywhere.
+- Settings gains a master "Startup animation" On/Off switch (`setSplashAll`)
+  that flips every app at once; the per-app toggle under Apps is unchanged and
+  custom apps still default to off.
+- `tools\E2-Check.ps1`: attaches a magenta test wallpaper to real third-party
+  windows (Chromium, Qt, Tauri tried) and reports attach + paint deltas.
+
 ## 3.0.0 — 2026-11-22
 
 The first release under the Animated Launchers name: updates 1–18 from the roadmap, shipped together.

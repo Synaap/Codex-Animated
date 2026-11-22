@@ -546,6 +546,21 @@ internal static class ArtworkLook
         return dib;
     }
 
+    // An empty 32bpp DIB section for callers that render straight into the
+    // section's DC (the animation fast path). Delete with DeleteObject.
+    internal static IntPtr EmptyDib(int width, int height)
+    {
+        var info = new int[10];
+        info[0] = 40;
+        info[1] = width;
+        info[2] = -height;
+        info[3] = (32 << 16) | 1;
+        IntPtr bits;
+        IntPtr dib = CreateDIBSection(IntPtr.Zero, info, 0, out bits, IntPtr.Zero, 0);
+        if (dib == IntPtr.Zero) throw new Win32Exception();
+        return dib;
+    }
+
     [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateDIBSection(
         IntPtr dc, int[] info, uint usage, out IntPtr bits, IntPtr section, uint offset);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);

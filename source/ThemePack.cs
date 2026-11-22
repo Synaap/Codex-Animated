@@ -38,6 +38,8 @@ internal static class ThemePack
             string ini = Path.Combine(folder, "theme.ini");
             if (File.Exists(ini)) WriteEntry(zip, "theme.ini", ImageCodec.ReadBytes(ini));
             WriteEntry(zip, "wallpaper.jpg", ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg")));
+            string gif = Path.Combine(folder, "wallpaper.gif");
+            if (File.Exists(gif)) WriteEntry(zip, "wallpaper.gif", ImageCodec.ReadBytes(gif));
             string avatar = Path.Combine(folder, "avatar.jpg");
             if (File.Exists(avatar)) WriteEntry(zip, "avatar.jpg", ImageCodec.ReadBytes(avatar));
         }
@@ -60,6 +62,8 @@ internal static class ThemePack
                 string ini = Path.Combine(folder, "theme.ini");
                 if (File.Exists(ini)) WriteEntry(zip, "Themes/" + name + "/theme.ini", ImageCodec.ReadBytes(ini));
                 WriteEntry(zip, "Themes/" + name + "/wallpaper.jpg", ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg")));
+                string gif = Path.Combine(folder, "wallpaper.gif");
+                if (File.Exists(gif)) WriteEntry(zip, "Themes/" + name + "/wallpaper.gif", ImageCodec.ReadBytes(gif));
                 string avatar = Path.Combine(folder, "avatar.jpg");
                 if (File.Exists(avatar)) WriteEntry(zip, "Themes/" + name + "/avatar.jpg", ImageCodec.ReadBytes(avatar));
             }
@@ -122,6 +126,9 @@ internal static class ThemePack
     {
         byte[] wallpaper = Required(entries, "wallpaper.jpg", "The theme file has no wallpaper.");
         wallpaper = WallpaperBytes(wallpaper);
+        byte[] gif = null;
+        if (entries.ContainsKey("wallpaper.gif") && ImageCodec.IsGif(entries["wallpaper.gif"]))
+            gif = entries["wallpaper.gif"];
         byte[] avatar = null;
         if (entries.ContainsKey("avatar.jpg")) avatar = WallpaperBytes(entries["avatar.jpg"]);
         byte[] themeIni = null;
@@ -138,6 +145,7 @@ internal static class ThemePack
             Directory.CreateDirectory(folder);
             if (themeIni != null) ImageCodec.SaveAtomic(Path.Combine(folder, "theme.ini"), themeIni);
             ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), wallpaper);
+            if (gif != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.gif"), gif);
             if (avatar != null) ImageCodec.SaveAtomic(Path.Combine(folder, "avatar.jpg"), avatar);
         }
         catch
@@ -200,7 +208,8 @@ internal static class ThemePack
 
     private static readonly Dictionary<string, bool> Known =
         new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase) {
-            { "manifest.ini", true }, { "theme.ini", true }, { "wallpaper.jpg", true }, { "avatar.jpg", true } };
+            { "manifest.ini", true }, { "theme.ini", true }, { "wallpaper.jpg", true }, { "avatar.jpg", true },
+            { "wallpaper.gif", true } };
 
     private static Dictionary<string, byte[]> ReadKnown(ZipArchive zip, string prefix)
     {

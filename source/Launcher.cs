@@ -16,8 +16,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Animated Launchers")]
 [assembly: AssemblyProduct("Animated Launchers")]
 [assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Devin, Antigravity, Codex and Claude")]
-[assembly: AssemblyVersion("3.0.0.0")]
-[assembly: AssemblyFileVersion("3.0.0.0")]
+[assembly: AssemblyVersion("3.1.0.0")]
+[assembly: AssemblyFileVersion("3.1.0.0")]
 
 internal static class Launcher
 {

@@ -92,7 +92,7 @@ internal sealed class Look
 {
     internal static readonly Color DefaultTint = Color.FromArgb(0x8C, 0x66, 0xD1);
     internal int Opacity = 15, Blur, Dim, Tint, FocusX = 50, FocusY = 50, Clear, Glow, Vignette;
-    internal int Sat = 100, Fade;
+    internal int Sat = 100, Fade, Drift;
     internal string ClearSide = "", Fit = "cover";
     internal Color TintColor = DefaultTint;
 
@@ -103,7 +103,7 @@ internal sealed class Look
         var look = new Look();
         look.Opacity = Opacity; look.Blur = Blur; look.Dim = Dim; look.Tint = Tint;
         look.FocusX = FocusX; look.FocusY = FocusY; look.Clear = Clear; look.Glow = Glow;
-        look.Vignette = Vignette; look.Sat = Sat; look.Fade = Fade;
+        look.Vignette = Vignette; look.Sat = Sat; look.Fade = Fade; look.Drift = Drift;
         look.ClearSide = ClearSide; look.Fit = Fit; look.TintColor = TintColor;
         return look;
     }
@@ -119,7 +119,7 @@ internal sealed class Look
     {
         return Opacity == other.Opacity && FocusX == other.FocusX && FocusY == other.FocusY &&
             Clear == other.Clear && Glow == other.Glow && Vignette == other.Vignette &&
-            ClearSide == other.ClearSide && Fit == other.Fit;
+            ClearSide == other.ClearSide && Fit == other.Fit && Drift == other.Drift;
     }
 
     internal static Look Read(IniFile ini)
@@ -136,6 +136,7 @@ internal sealed class Look
         look.Vignette = Number(ini, "vignette", 0, 0, 100);
         look.Sat = Number(ini, "sat", 100, 0, 150);
         look.Fade = Number(ini, "fade", 0, 0, 100);
+        look.Drift = Number(ini, "drift", 0, 0, 100);
         string side = (ini.Get("clearSide") ?? "").Trim().ToLowerInvariant();
         look.ClearSide = side == "left" || side == "right" || side == "center" ? side : "";
         string fit = (ini.Get("fit") ?? "").Trim().ToLowerInvariant();
@@ -161,6 +162,7 @@ internal sealed class Look
         ini.Set("sat", Sat.ToString(CultureInfo.InvariantCulture));
         ini.Set("fade", Fade.ToString(CultureInfo.InvariantCulture));
         ini.Set("fit", Fit ?? "cover");
+        ini.Set("drift", Drift.ToString(CultureInfo.InvariantCulture));
     }
 
     internal static int Number(IniFile ini, string key, int fallback, int min, int max)
@@ -328,18 +330,24 @@ internal sealed class AppProfile
 
     private AppProfile(string root) { Root = root; }
 
-    internal static AppProfile Load(string root) { return Parse(root, IniFile.Load(Path.Combine(root, FileName))); }
+    internal static AppProfile Load(string root) { return Load(root, false); }
+
+    internal static AppProfile Load(string root, bool customApp) { return Parse(root, IniFile.Load(Path.Combine(root, FileName)), customApp); }
 
     // Throws when the file exists but cannot be read, so a live reload can keep its last state.
-    internal static AppProfile LoadStrict(string root) { return Parse(root, IniFile.LoadStrict(Path.Combine(root, FileName))); }
+    internal static AppProfile LoadStrict(string root) { return LoadStrict(root, false); }
 
-    private static AppProfile Parse(string root, IniFile ini)
+    internal static AppProfile LoadStrict(string root, bool customApp) { return Parse(root, IniFile.LoadStrict(Path.Combine(root, FileName)), customApp); }
+
+    private static AppProfile Parse(string root, IniFile ini, bool customApp)
     {
         var profile = new AppProfile(root);
         profile.Theme = (ini.Get("theme") ?? "").Trim();
         profile.Look = Look.Read(ini);
         profile.Text = SplashText.Read(ini);
-        profile.SplashOnStart = !string.Equals((ini.Get("splash") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
+        profile.SplashOnStart = customApp ?
+            string.Equals((ini.Get("splash") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase) :
+            !string.Equals((ini.Get("splash") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
         profile.Watch = !string.Equals((ini.Get("watch") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
         profile.Speed = Look.Number(ini, "speed", 1, 1, 3);
         string style = SplashText.NormalizeStyle(ini.Get("style"));

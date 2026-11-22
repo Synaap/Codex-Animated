@@ -72,6 +72,12 @@ internal static class ThemeLibrary
         if (!File.Exists(wallpaper)) throw new FileNotFoundException("The theme \"" + name + "\" has no wallpaper.", wallpaper);
         WithLock(appRoot, delegate {
             ImageCodec.SaveAtomic(Path.Combine(appRoot, "wallpaper.jpg"), ImageCodec.ReadBytes(wallpaper));
+            // An animated wallpaper travels with the theme; a still theme
+            // removes any gif the app folder was left with.
+            string gif = Path.Combine(folder, "wallpaper.gif");
+            string appGif = Path.Combine(appRoot, "wallpaper.gif");
+            if (File.Exists(gif)) ImageCodec.SaveAtomic(appGif, ImageCodec.ReadBytes(gif));
+            else File.Delete(appGif);
             string avatar = Path.Combine(folder, "avatar.jpg");
             string appAvatar = Path.Combine(appRoot, "avatar.jpg");
             if (File.Exists(avatar)) ImageCodec.SaveAtomic(appAvatar, ImageCodec.ReadBytes(avatar));
@@ -294,13 +300,22 @@ internal static class ThemeLibrary
     // Imports a picture as a new theme named after the file; returns the folder name.
     internal static string Create(string imagePath)
     {
-        return CreateFromJpeg(ImageCodec.ToJpeg(imagePath),
+        byte[] bytes = ImageCodec.ReadBytes(imagePath);
+        if (ImageCodec.IsGif(bytes))
+            return CreateFromJpeg(ImageCodec.GifToJpeg(bytes),
+                Path.GetFileNameWithoutExtension(imagePath), bytes);
+        return CreateFromJpeg(ImageCodec.ToJpeg(bytes),
             Path.GetFileNameWithoutExtension(imagePath));
     }
 
     // The same create for jpeg bytes already in memory (paste, a rendered gradient).
     // baseName names the theme; " 2", " 3" dedupes apply as usual.
     internal static string CreateFromJpeg(byte[] jpeg, string baseName)
+    {
+        return CreateFromJpeg(jpeg, baseName, null);
+    }
+
+    internal static string CreateFromJpeg(byte[] jpeg, string baseName, byte[] gif)
     {
         Color suggestion = Color.Empty;
         using (Bitmap decoded = ImageCodec.DecodeJpeg(jpeg))
@@ -320,6 +335,7 @@ internal static class ThemeLibrary
         {
             Directory.CreateDirectory(folder);
             ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), jpeg);
+            if (gif != null) ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.gif"), gif);
             var ini = new IniFile();
             new Look().Write(ini);
             var text = new SplashText();
@@ -506,12 +522,33 @@ internal static class ThemeLibrary
     internal static string Stamp(string name)
     {
         long value = 17;
-        foreach (string file in new[] { "wallpaper.jpg", "avatar.jpg" })
+        foreach (string file in new[] { "wallpaper.jpg", "wallpaper.gif", "avatar.jpg" })
         {
             var info = new FileInfo(Path.Combine(Folder(name), file));
             value = value * 31 + (info.Exists ? info.LastWriteTimeUtc.Ticks ^ info.Length : 0);
         }
         return (value & long.MaxValue).ToString("x", CultureInfo.InvariantCulture);
+    }
+
+    // Stores image bytes as a theme's wallpaper. An animated GIF keeps its file
+    // and gets a first-frame wallpaper.jpg for still paths; any other image
+    // becomes the JPEG and clears a gif left over from an earlier theme.
+    internal static void SaveWallpaper(string name, byte[] bytes)
+    {
+        string folder = Folder(name);
+        WithLock(folder, delegate {
+            string gif = Path.Combine(folder, "wallpaper.gif");
+            if (ImageCodec.IsGif(bytes))
+            {
+                ImageCodec.SaveAtomic(gif, bytes);
+                ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), ImageCodec.GifToJpeg(bytes));
+            }
+            else
+            {
+                ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), ImageCodec.ToJpeg(bytes));
+                File.Delete(gif);
+            }
+        });
     }
 
     // Serializes everything that writes into one settings or theme folder, in every process.

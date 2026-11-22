@@ -17,6 +17,12 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
     private Look look;
     private Size presented;
     private bool enabled = true, imageChanged;
+    // Animation fast path: a persistent DIB + memory DC the frames draw
+    // straight into, skipping the per-frame bitmap alloc, GetHbitmap copy and
+    // GDI teardown the still path pays. animSize tracks the buffer's extent.
+    private bool animated;
+    private IntPtr animDc, animBmp, animOld;
+    private Size animSize;
 
     internal PreviewArtworkChild(IntPtr parent, uint expectedPid, Bitmap image, Look look,
         string product)
@@ -52,6 +58,16 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
 
     internal void SetImage(Bitmap replacement)
     {
+        animated = false;
+        image = replacement;
+        imageChanged = true;
+    }
+
+    // Same contract as SetImage, but marks this as a frame of a gif so Present
+    // uses the persistent-buffer path that can hold real gif frame rates.
+    internal void SetAnimatedImage(Bitmap replacement)
+    {
+        animated = true;
         image = replacement;
         imageChanged = true;
     }
@@ -98,6 +114,36 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         if (size != presented || imageChanged)
         {
             bool pixelPass = ArtworkLook.NeedsPixelPass(look);
+            if (animated && !pixelPass)
+            {
+                // Draw the frame straight into the persistent DIB's DC: one
+                // stretch (bilinear — bicubic can't hold gif cadence) + one
+                // layered update, no per-frame alloc or GDI teardown.
+                if (animSize != size || animDc == IntPtr.Zero)
+                {
+                    FreeAnimBuffers();
+                    animDc = CreateCompatibleDC(IntPtr.Zero);
+                    animBmp = animDc == IntPtr.Zero ? IntPtr.Zero : ArtworkLook.EmptyDib(size.Width, size.Height);
+                    animOld = animBmp == IntPtr.Zero ? IntPtr.Zero : SelectObject(animDc, animBmp);
+                    if (animOld == IntPtr.Zero || animOld == new IntPtr(-1)) { FreeAnimBuffers(); throw new Win32Exception(); }
+                    animSize = size;
+                }
+                RectangleF acrop; Rectangle adst; InterpolationMode amode;
+                ArtworkLook.FramePlan(image.Size, size, look, out acrop, out adst, out amode);
+                using (var g = Graphics.FromHdc(animDc))
+                {
+                    g.InterpolationMode = InterpolationMode.Bilinear;
+                    g.DrawImage(image, adst, acrop, GraphicsUnit.Pixel);
+                }
+                var afrom = new NativePoint();
+                var asize = new NativeSize { W = size.Width, H = size.Height };
+                var ablend = new Blend { Alpha = look.Alpha, Format = 0 };
+                if (!UpdateLayeredWindow(Handle, IntPtr.Zero, IntPtr.Zero, ref asize, animDc,
+                    ref afrom, 0, ref ablend, 2)) throw new Win32Exception();
+                presented = size;
+                imageChanged = false;
+                goto finish;
+            }
             using (var frame = new Bitmap(size.Width, size.Height,
                 pixelPass ? PixelFormat.Format32bppArgb : PixelFormat.Format32bppRgb))
             {
@@ -135,6 +181,7 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
             }
             presented = size;
             imageChanged = false;
+            finish: ;
         }
         // Read this child's own visibility bit. A hidden parent otherwise appears
         // to hide every child, even when its thumbnail surface is ready.
@@ -157,7 +204,16 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         base.WndProc(ref message);
     }
 
-    public void Dispose() { if (Handle != IntPtr.Zero) DestroyHandle(); }
+    private void FreeAnimBuffers()
+    {
+        if (animOld != IntPtr.Zero && animOld != new IntPtr(-1)) SelectObject(animDc, animOld);
+        animOld = IntPtr.Zero;
+        if (animBmp != IntPtr.Zero) { DeleteObject(animBmp); animBmp = IntPtr.Zero; }
+        if (animDc != IntPtr.Zero) { DeleteDC(animDc); animDc = IntPtr.Zero; }
+        animSize = Size.Empty;
+    }
+
+    public void Dispose() { FreeAnimBuffers(); if (Handle != IntPtr.Zero) DestroyHandle(); }
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] struct NativePoint { public int X,Y; }
     [StructLayout(LayoutKind.Sequential)] struct NativeSize { public int W,H; }

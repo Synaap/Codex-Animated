@@ -21,7 +21,7 @@ internal sealed class AppSession : IDisposable
     private const uint ForegroundEvent = 3;
     private const uint MoveSizeStart = 0x000A, MoveSizeEnd = 0x000B;
     private const uint LocationEvent = 0x800B;
-    private const int IdleInterval = 350, DragInterval = 16, WaitingInterval = 1500;
+    private const int IdleInterval = 350, DragInterval = 16, WaitingInterval = 1500, DriftInterval = 400;
     private const int ReloadDelay = 150, InstallCheckInterval = 60000;
     private const int MaxSessionFaults = 3;
     // At most this many app windows get artwork; a slow rescan picks up windows
@@ -39,6 +39,13 @@ internal sealed class AppSession : IDisposable
     private readonly bool forceFallback = Environment.GetEnvironmentVariable("ANIMATED_FALLBACK") == "1";
     private AppProfile profile;
     private Bitmap raw, source; // source aliases raw unless the look produced a copy.
+    // An animated wallpaper: raw gif frames, the per-frame rendered images and
+    // the pump that steps them. gif is null for a still wallpaper.
+    private ImageCodec.GifArt gif;
+    private Bitmap[] gifFrames;
+    private int gifIndex;
+    private int gifDuration;
+    private int gifStarted;
     private string wallpaperStamp;
     // One slot per accepted app window, capped so a window factory cannot flood it.
     private readonly List<WindowSlot> slots = new List<WindowSlot>();
@@ -46,6 +53,9 @@ internal sealed class AppSession : IDisposable
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     private readonly System.Windows.Forms.Timer reloadTimer = new System.Windows.Forms.Timer();
     private readonly System.Windows.Forms.Timer installTimer = new System.Windows.Forms.Timer();
+    private readonly System.Windows.Forms.Timer frameTimer = new System.Windows.Forms.Timer();
+    private readonly System.Windows.Forms.Timer driftTimer = new System.Windows.Forms.Timer();
+    private double driftPhase;
     private FileSystemWatcher watcher;
     private int reloadFailures;
     private readonly HashSet<IntPtr> loggedWindows = new HashSet<IntPtr>();
@@ -71,12 +81,16 @@ internal sealed class AppSession : IDisposable
         this.marshal = marshal;
         settingsDirectory = app.SettingsDirectory;
         settings = new WallpaperSettings(LauncherTheme.DefaultWallpaperPath, settingsDirectory);
-        profile = AppProfile.Load(settingsDirectory);
+        profile = AppProfile.Load(settingsDirectory, app.IsCustom);
         raw = settings.LoadBitmap();
-        source = ArtworkLook.Render(raw, profile.Look);
+        TryLoadGif(profile.Look);
+        source = gifFrames != null ? gifFrames[0] : ArtworkLook.Render(raw, profile.Look);
         wallpaperStamp = WallpaperStamp();
         onEvent = WindowChanged;
         timer.Tick += delegate { Guard(Tick, "window refresh"); };
+        frameTimer.Tick += delegate { Guard(FrameTick, "wallpaper frame"); };
+        driftTimer.Interval = DriftInterval;
+        driftTimer.Tick += delegate { Guard(DriftTick, "artwork drift"); };
         reloadTimer.Interval = ReloadDelay;
         reloadTimer.Tick += delegate { Guard(Reload, "settings reload"); };
         try
@@ -482,7 +496,7 @@ internal sealed class AppSession : IDisposable
     {
         try
         {
-            AppProfile fresh = AppProfile.LoadStrict(settingsDirectory);
+            AppProfile fresh = AppProfile.LoadStrict(settingsDirectory, app.IsCustom);
             fresh.SplashOnStart = value;
             fresh.Save();
             profile.SplashOnStart = value;
@@ -502,7 +516,7 @@ internal sealed class AppSession : IDisposable
     {
         try
         {
-            AppProfile fresh = AppProfile.LoadStrict(settingsDirectory);
+            AppProfile fresh = AppProfile.LoadStrict(settingsDirectory, app.IsCustom);
             fresh.Watch = on;
             fresh.Save();
             profile.Watch = on;
@@ -558,7 +572,7 @@ internal sealed class AppSession : IDisposable
         {
             // Watch may have flipped: the session resumes or parks before anything else.
             AppProfile fresh = null;
-            try { fresh = AppProfile.Load(settingsDirectory); } catch (IOException) { }
+            try { fresh = AppProfile.Load(settingsDirectory, app.IsCustom); } catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             if (fresh != null && fresh.Watch != profile.Watch)
             {
@@ -575,6 +589,7 @@ internal sealed class AppSession : IDisposable
         }
         if (!active) return;
         if (string.Equals(name, "wallpaper.jpg", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "wallpaper.gif", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "avatar.jpg", StringComparison.OrdinalIgnoreCase))
             ScheduleReload(ReloadDelay);
     }
@@ -619,16 +634,22 @@ internal sealed class AppSession : IDisposable
 
     private void ApplyProfile()
     {
-        AppProfile next = AppProfile.LoadStrict(settingsDirectory);
+        AppProfile next = AppProfile.LoadStrict(settingsDirectory, app.IsCustom);
         next.Look = EffectiveLook(next.Look, next);
         string stamp = WallpaperStamp();
         bool rawChanged = stamp != wallpaperStamp;
+        // Load, unload or re-render the animation: a new file, or the look
+        // crossing the per-pixel-effects boundary it cannot run under.
+        if (rawChanged || (gif != null) == ArtworkLook.NeedsPixelPass(next.Look))
+            TryLoadGif(next.Look);
+        else if (gif != null && !next.Look.SameRender(profile.Look))
+            RenderGifFrames(next.Look);
         bool relook = rawChanged || !next.Look.SameRender(profile.Look);
         Bitmap nextRaw = rawChanged ? settings.LoadBitmapStrict() : null;
         Bitmap nextSource = null;
         if (relook)
         {
-            try { nextSource = ArtworkLook.Render(nextRaw ?? raw, next.Look); }
+            try { nextSource = gifFrames != null ? gifFrames[gifIndex] : ArtworkLook.Render(nextRaw ?? raw, next.Look); }
             catch { if (nextRaw != null) nextRaw.Dispose(); throw; }
         }
         Bitmap oldRaw = raw, oldSource = source;
@@ -662,7 +683,9 @@ internal sealed class AppSession : IDisposable
         profile.ExtraDim = next.ExtraDim;
         profile.HideFullscreen = next.HideFullscreen;
         profile.Applied = next.Applied;
-        if (relook && oldSource != oldRaw) oldSource.Dispose();
+        // A gif frame is owned by gifFrames; only free looks' own renders.
+        if (relook && oldSource != oldRaw && (gifFrames == null || Array.IndexOf(gifFrames, oldSource) < 0))
+            oldSource.Dispose();
         if (rawChanged)
         {
             oldRaw.Dispose();
@@ -674,8 +697,138 @@ internal sealed class AppSession : IDisposable
     private string WallpaperStamp()
     {
         var info = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.jpg"));
-        return info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "none";
+        var animated = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.gif"));
+        return (info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "none") +
+            "|" + (animated.Exists ? animated.LastWriteTimeUtc.Ticks + ":" + animated.Length : "none");
     }
+
+    // Loads wallpaper.gif and renders every frame with the look; unloads when
+    // the file is gone or the look needs per-pixel effects it cannot animate.
+    private void TryLoadGif(Look look)
+    {
+        string path = Path.Combine(settingsDirectory, "wallpaper.gif");
+        string reason = null;
+        ImageCodec.GifArt art = null;
+        if (File.Exists(path)) art = ImageCodec.LoadGif(path, out reason);
+        if (art != null && ArtworkLook.NeedsPixelPass(look))
+        {
+            art.Dispose(); art = null;
+            reason = "the look uses clear zones, glow or vignette, which need a still image";
+        }
+        FreeGif();
+        if (art == null)
+        {
+            if (reason != null) Log("settings", "animated wallpaper stays a still: " + reason);
+            return;
+        }
+        gif = art;
+        RenderGifFrames(look);
+        gifIndex = 0;
+        gifDuration = 0;
+        foreach (int delay in gif.Delays) gifDuration += delay;
+        gifStarted = Environment.TickCount;
+        Log("settings", "wallpaper animation loaded (" + gif.Count + " frames, " +
+            gif.Frames[0].Width + "x" + gif.Frames[0].Height + ")");
+    }
+
+    // Renders each raw frame with the look once; the pump then only pays the
+    // cover-scale and present cost per step, not the whole pipeline.
+    private void RenderGifFrames(Look look)
+    {
+        var frames = new Bitmap[gif.Count];
+        try
+        {
+            for (int i = 0; i < frames.Length; i++)
+            {
+                Bitmap rendered = ArtworkLook.Render(gif.Frames[i], look);
+                frames[i] = object.ReferenceEquals(rendered, gif.Frames[i]) ? new Bitmap(rendered) : rendered;
+            }
+        }
+        catch { foreach (Bitmap frame in frames) if (frame != null) frame.Dispose(); throw; }
+        Bitmap[] old = gifFrames;
+        gifFrames = frames;
+        if (old != null) foreach (Bitmap frame in old) if (frame != null) frame.Dispose();
+    }
+
+    private void FreeGif()
+    {
+        frameTimer.Stop();
+        gifDuration = 0;
+        if (gifFrames != null) { foreach (Bitmap frame in gifFrames) if (frame != null) frame.Dispose(); gifFrames = null; }
+        if (gif != null) { gif.Dispose(); gif = null; }
+        gifIndex = 0;
+    }
+
+    // The animation pump: step to the next frame only while some slot is
+    // actually showing artwork, so hidden, minimized or fullscreen apps cost 0%.
+    private void FrameTick()
+    {
+        if (gif == null || gifFrames == null || gifDuration <= 0 || !AnyShown()) { frameTimer.Stop(); return; }
+        // Timeline pump: presenting through UpdateLayeredWindow costs tens of
+        // ms per frame, so stepping exactly one frame per tick makes a short-
+        // delay gif run late and judder. Instead jump the index to wherever
+        // wall-clock says the animation should be, dropping frames when behind
+        // so the loop keeps its authored duration.
+        int elapsed = unchecked((int)(Environment.TickCount - gifStarted)) % gifDuration;
+        int[] d = gif.Delays;
+        int acc = 0, idx = 0;
+        while (idx < d.Length - 1 && acc + d[idx] <= elapsed) { acc += d[idx]; idx++; }
+        if (idx != gifIndex)
+        {
+            gifIndex = idx;
+            source = gifFrames[gifIndex];
+            foreach (WindowSlot slot in slots.ToArray())
+                if (ShownFor(slot)) { slot.SetImage(source); slot.Present(); }
+        }
+        frameTimer.Interval = Math.Max(15, acc + d[gifIndex] - elapsed);
+    }
+
+    private bool AnyShown()
+    {
+        foreach (WindowSlot slot in slots) if (ShownFor(slot)) return true;
+        return false;
+    }
+
+    private void UpdatePump()
+    {
+        bool want = gif != null && gifFrames != null && active && !shuttingDown && AnyShown();
+        if (want && !frameTimer.Enabled)
+        {
+            int before = 0;
+            for (int i = 0; i < gifIndex && i < gif.Delays.Length; i++) before += gif.Delays[i];
+            gifStarted = Environment.TickCount - before;
+            frameTimer.Interval = Math.Max(15, gif.Delays[gifIndex]);
+            frameTimer.Start();
+        }
+        else if (!want && frameTimer.Enabled) frameTimer.Stop();
+        bool wantDrift = active && !shuttingDown && profile.Look.Drift > 0 && AnyShown() &&
+            !ArtworkLook.NeedsPixelPass(profile.Look);
+        if (wantDrift && !driftTimer.Enabled) { driftPhase = 0; driftTimer.Start(); }
+        else if (!wantDrift && driftTimer.Enabled) { driftTimer.Stop(); ResetDrift(); }
+    }
+
+    // The eased parallax drift: a slow lissajous wobble of the cover crop around
+    // the theme's focus. A 400 ms step costs one opaque re-crop, never the
+    // per-pixel pass, so clear/glow/vignette looks keep a steady image.
+    private void DriftTick()
+    {
+        if (profile.Look.Drift <= 0 || !AnyShown()) { driftTimer.Stop(); return; }
+        driftPhase += 0.5;
+        double reach = profile.Look.Drift * 0.22; // drift=100 pans up to +-22 focus points
+        var look = profile.Look.Copy();
+        look.FocusX = ClampFocus(profile.Look.FocusX + (int)Math.Round(Math.Sin(driftPhase) * reach));
+        look.FocusY = ClampFocus(profile.Look.FocusY + (int)Math.Round(Math.Sin(driftPhase * 0.7 + 1.3) * reach));
+        foreach (WindowSlot slot in slots.ToArray())
+            if (ShownFor(slot)) { slot.SetLook(look); slot.Present(); }
+    }
+
+    private void ResetDrift()
+    {
+        driftPhase = 0;
+        foreach (WindowSlot slot in slots.ToArray()) slot.SetLook(profile.Look);
+    }
+
+    private static int ClampFocus(int value) { return Math.Max(0, Math.Min(100, value)); }
 
     private void WindowChanged(IntPtr hook, uint kind, IntPtr window, int objectId, int childId,
         uint threadId, uint time)
@@ -790,6 +943,7 @@ internal sealed class AppSession : IDisposable
     {
         PresentArtwork();
         if (slots.Count > 0) DecideColdStart();
+        UpdatePump();
     }
 
     // One decision per process id, so a window the app replaces during startup or a
@@ -970,6 +1124,15 @@ internal sealed class AppSession : IDisposable
         // Draw or conceal this window's artwork for the current session state.
         internal void Present()
         {
+            // Any presentation, including one after a hidden spell, uses the
+            // animation's current frame rather than what was live last time.
+            // The child gets the persistent-buffer path that can hold gif
+            // cadence; the overlay fallback keeps the still path.
+            if (session.gif != null)
+            {
+                if (child != null) child.SetAnimatedImage(session.source);
+                if (artwork != null) artwork.SetImage(session.source);
+            }
             bool shown = session.ShownFor(this);
             if (!session.forceFallback && !childUnavailable && (shown || child != null) && TryChild()) return;
             if (!shown)
@@ -1057,6 +1220,9 @@ internal sealed class AppSession : IDisposable
         installTimer.Dispose();
         if (faultTimer != null) faultTimer.Dispose();
         reloadTimer.Dispose();
+        frameTimer.Dispose();
+        driftTimer.Dispose();
+        FreeGif();
         if (watcher != null) watcher.Dispose();
         SystemEvents.UserPreferenceChanged -= OnPreferenceChanged;
         if (foregroundHook != IntPtr.Zero) Native.UnhookWinEvent(foregroundHook);

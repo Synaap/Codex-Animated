@@ -269,7 +269,8 @@
     for (const t of visible) {
       const using = usedBy(t.name);
       const thumbImg = h('img', { alt: '', src: imgUrl('wallpaper', { theme: t.name, w: 160, v: t.stamp }) });
-      const thumb = h('span', { class: `thumb${t.broken ? ' broken' : ''}` }, thumbImg);
+      const thumb = h('span', { class: `thumb${t.broken ? ' broken' : ''}` }, thumbImg,
+        t.gif ? h('i', { class: 'gif-badge', text: 'GIF' }) : null);
       thumbImg.addEventListener('error', () => thumb.classList.add('broken'));
       const fav = isFav(t.name);
       const star = h('button', {
@@ -375,14 +376,16 @@
       else if (e.key === 'Escape') { reverting = true; field.value = t.name; error.textContent = ''; field.blur(); reverting = false; }
     });
     field.addEventListener('blur', commit);
-    const chips = S.apps.map(app => {
+    const tab = S.useOnTab || 'ai';
+    const tabs = segmented([['ai', _('AI')], ['other', _('Work in progress')]], tab, v => { S.useOnTab = v; refreshChips(); });
+    const chips = S.apps.filter(app => app.group === tab).map(app => {
       const on = app.theme === t.name;
       const chip = h('button', { type: 'button', class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: () => applyTo(app.id, app.name) },
         on ? glyph(0xE73E) : null, app.name);
       return chip;
     });
     return h('div', { class: 'cv-head' }, h('div', { class: 'name-wrap' }, field, error),
-      h('div', { class: 'use-on' }, h('span', { class: 'label', text: _('Use on') }), chips, button(_('All apps'), 'quiet', () => applyTo('all', 'all apps'))));
+      h('div', { class: 'use-on' }, h('span', { class: 'label', text: _('Use on') }), tabs, chips, button(_('All apps'), 'quiet', () => applyTo('all', 'all apps'))));
   }
 
   function applyTo(appId, label) {
@@ -822,6 +825,7 @@
     const sVignette = slider(_('Vignette'), 0, 100, look.vignette ?? 0, v => `${v}%`, v => { look.vignette = v; onEdit('look'); }, 0);
     const sGlow = slider(_('Glow'), 0, 100, look.glow ?? 0, v => `${v}%`, v => { look.glow = v; onEdit('look'); }, 0);
     const sClear = slider(_('Clear zone'), 0, 100, look.clear ?? 0, v => `${v}%`, v => { look.clear = v; onEdit('look'); }, 0);
+    const sDrift = slider(_('Drift'), 0, 100, look.drift ?? 0, v => `${v}%`, v => { look.drift = v; onEdit('look'); }, 0);
     const sidePick = h('select', { class: 'select', 'aria-label': _('Clear side') });
     [['', _('Off')], ['left', _('Left')], ['right', _('Right')], ['center', _('Middle')]].forEach(([v, label]) => sidePick.append(h('option', { value: v, text: label })));
     sidePick.value = look.clearSide || '';
@@ -831,7 +835,7 @@
     fitPick.value = look.fit || 'cover';
     fitPick.addEventListener('change', () => { look.fit = fitPick.value; onEdit('look'); });
     const fine = h('details', { class: 'field' }, h('summary', { text: _('Fine tuning') }),
-      sSat, sFade, sVignette, sGlow, sClear,
+      sSat, sFade, sVignette, sGlow, sClear, sDrift,
       h('div', { class: 'field' }, h('span', { class: 'label', text: _('Clear side') }), sidePick),
       h('div', { class: 'field' }, h('span', { class: 'label', text: _('Image fit') }), fitPick),
       h('p', { class: 'hint', text: _('Fade for light apps, glow keeps only bright parts, the clear zone keeps text readable.') }));
@@ -1212,7 +1216,17 @@
       call('setPrefs', { lang: langPick.value }).then(p => { if (p) S.prefs = Object.assign({}, S.prefs, p); }).catch(() => { });
       buildAll();
     });
+    const splashState = S.apps.length ? (S.apps.every(a => a.splash) ? 'on' : (S.apps.every(a => !a.splash) ? 'off' : '')) : 'off';
+    const splashSeg = segmented([['on', _('On')], ['off', _('Off')]], splashState, v => {
+      call('setSplashAll', { on: v === 'on' }).then(apps => { S.apps = apps; setSettingsStatus(v === 'on' ? _('Animation plays on every app.') : _('Animation off everywhere.')); buildAll(); })
+        .catch(e => setSettingsStatus(_f('Couldn\'t save. {0}', e.message), true));
+    });
     wrap.append(
+      h('section', { class: 'app-block' },
+        h('div', { class: 'app-line1' }, h('span', { class: 'app-name', text: _('Startup animation') })),
+        h('div', { class: 'app-controls' }, h('div', { class: 'ctl' },
+          h('span', { class: 'label', text: _('Play when apps start') }), splashSeg,
+          h('p', { class: 'hint', text: _('Switches the animation for every app at once. Per-app switches live under Apps — custom apps stay off unless you turn them on.') })))),
       h('section', { class: 'app-block' },
         h('div', { class: 'app-line1' }, h('span', { class: 'app-name', text: _('Language') })),
         h('div', { class: 'app-controls' }, h('div', { class: 'ctl' },
@@ -1524,7 +1538,7 @@
       return Promise.resolve(false);
     }
     const isPack = ext === '.altheme' || ext === '.albackup' || ext === '.zip';
-    const isImage = ['.jpg', '.jpeg', '.png', '.bmp'].includes(ext);
+    const isImage = ['.jpg', '.jpeg', '.png', '.bmp', '.gif'].includes(ext);
     if (!isPack && !isImage) {
       setStatus(_('Drop a theme file (.altheme / .albackup) or an image.'), true);
       return Promise.resolve(false);

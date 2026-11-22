@@ -58,6 +58,109 @@ internal static class ImageCodec
         }
     }
 
+    internal static bool IsGif(byte[] bytes)
+    {
+        return bytes != null && bytes.Length >= 6 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F' &&
+            bytes[3] == '8' && (bytes[4] == '7' || bytes[4] == '9') && bytes[5] == 'a';
+    }
+
+    // A decoded animated GIF: every frame already normalized to opaque 24bpp.
+    internal sealed class GifArt : IDisposable
+    {
+        internal Bitmap[] Frames;
+        internal int[] Delays;
+        internal int Count { get { return Frames.Length; } }
+        public void Dispose() { foreach (Bitmap frame in Frames) frame.Dispose(); }
+    }
+
+    // Decoded pixels stay under this budget so a hostile or huge animation
+    // cannot fill memory; bigger animations fall back to a still.
+    internal const int MaxGifPixels = 48 * 1000 * 1000;
+    private const int MaxGifFrames = 600;
+
+    // Decodes an animated GIF. Returns null with a reason when the file is not a
+    // multi-frame GIF or would be too big to animate; throws on unreadable data.
+    internal static GifArt LoadGif(string path, out string reason)
+    {
+        return LoadGif(ImageCodec.ReadBytes(path), out reason);
+    }
+
+    internal static GifArt LoadGif(byte[] bytes, out string reason)
+    {
+        return LoadGif(bytes, MaxGifPixels, out reason);
+    }
+
+    internal static GifArt LoadGif(byte[] bytes, long maxPixels, out string reason)
+    {
+        reason = null;
+        if (!IsGif(bytes)) { reason = "it is not a GIF"; return null; }
+        using (var image = Image.FromStream(new MemoryStream(bytes, false), true, false))
+        {
+            int count = image.GetFrameCount(FrameDimension.Time);
+            if (count < 2) { reason = "it has only one frame"; return null; }
+            if (count > MaxGifFrames) { reason = "it has too many frames"; return null; }
+            long pixels = (long)image.Width * image.Height * count;
+            if (pixels > maxPixels) { reason = "it is too large to animate"; return null; }
+            int[] delays = ReadDelays(image, count);
+            var art = new GifArt { Frames = new Bitmap[count], Delays = delays };
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    image.SelectActiveFrame(FrameDimension.Time, i);
+                    var frame = new Bitmap(image.Width, image.Height, PixelFormat.Format24bppRgb);
+                    try
+                    {
+                        using (var canvas = Graphics.FromImage(frame))
+                        {
+                            canvas.Clear(Color.FromArgb(8, 20, 29));
+                            canvas.DrawImage(image, new Rectangle(0, 0, frame.Width, frame.Height),
+                                0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
+                        }
+                        art.Frames[i] = frame;
+                    }
+                    catch { frame.Dispose(); throw; }
+                }
+                return art;
+            }
+            catch (Exception error) { art.Dispose(); throw BadImage(error); }
+        }
+    }
+
+    // FrameDelay values arrive in hundredths of a second; clamp to a range that
+    // is both respectful of the file and safe for the CPU-bound present path.
+    private static int[] ReadDelays(Image image, int count)
+    {
+        var delays = new int[count];
+        int[] raw = null;
+        const int frameDelayTag = 0x5100;
+        if (Array.IndexOf(image.PropertyIdList, frameDelayTag) >= 0)
+        {
+            byte[] value = image.GetPropertyItem(frameDelayTag).Value;
+            if (value != null && value.Length >= 4)
+            {
+                raw = new int[value.Length / 4];
+                for (int i = 0; i < raw.Length; i++) raw[i] = BitConverter.ToInt32(value, i * 4) * 10;
+            }
+        }
+        for (int i = 0; i < count; i++)
+        {
+            int delay = raw != null && i < raw.Length ? raw[i] : 100;
+            delays[i] = Math.Max(50, Math.Min(5000, delay));
+        }
+        return delays;
+    }
+
+    // First frame of an animated GIF as a JPEG: the still fallback written next
+    // to wallpaper.gif so non-animated paths always have a picture.
+    internal static byte[] GifToJpeg(byte[] bytes)
+    {
+        string reason;
+        using (GifArt art = LoadGif(bytes, out reason))
+        using (Bitmap first = art != null ? art.Frames[0] : Decode(new MemoryStream(bytes, false), false))
+            return EncodeJpeg(first);
+    }
+
     internal static void SaveAtomic(string target, byte[] bytes)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(target));

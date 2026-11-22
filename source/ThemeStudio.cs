@@ -23,8 +23,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Theme Studio")]
 [assembly: AssemblyProduct("Theme Studio")]
 [assembly: AssemblyDescription("Theme library and look editor for the Animated launchers")]
-[assembly: AssemblyVersion("3.0.0.0")]
-[assembly: AssemblyFileVersion("3.0.0.0")]
+[assembly: AssemblyVersion("3.1.0.0")]
+[assembly: AssemblyFileVersion("3.1.0.0")]
 
 internal static class ThemeStudioProgram
 {
@@ -401,7 +401,15 @@ internal sealed partial class StudioForm : Form
             theme = ThemeLibrary.Exact(theme);
             if (theme == null) return null;
             type = "image/jpeg";
-            if (s[1] == "wallpaper") return ScaledWallpaper(theme, Number(q, "w", 160, 16, 2400));
+            if (s[1] == "wallpaper")
+            {
+                // The full-size view of an animated theme plays the gif itself;
+                // thumbnails keep the cheap first-frame JPEG.
+                int width = Number(q, "w", 160, 16, 2400);
+                string gif = Path.Combine(ThemeLibrary.Folder(theme), "wallpaper.gif");
+                if (width >= 480 && File.Exists(gif)) { type = "image/gif"; return ImageCodec.ReadBytes(gif); }
+                return ScaledWallpaper(theme, width);
+            }
             if (s[1] == "avatar")
             {
                 string avatar = Path.Combine(ThemeLibrary.Folder(theme), "avatar.jpg");
@@ -687,7 +695,7 @@ internal sealed partial class StudioForm : Form
     {
         using (var dialog = new OpenFileDialog {
             Title = title, RestoreDirectory = true,
-            Filter = "Images (*.jpg, *.jpeg, *.png, *.bmp)|*.jpg;*.jpeg;*.png;*.bmp"
+            Filter = "Images (*.jpg, *.jpeg, *.png, *.bmp, *.gif)|*.jpg;*.jpeg;*.png;*.bmp;*.gif"
         })
             return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
@@ -777,7 +785,7 @@ internal sealed partial class StudioForm : Form
         Dictionary<string, object> t = Obj(m, "text") ?? new Dictionary<string, object>();
         var ini = new IniFile();
         foreach (string key in new[] { "opacity", "blur", "dim", "tint", "tintColor", "focusX", "focusY",
-            "clear", "clearSide", "glow", "vignette", "sat", "fade", "fit" })
+            "clear", "clearSide", "glow", "vignette", "sat", "fade", "fit", "drift" })
             if (Str(l, key) != null) ini.Set(key, Str(l, key));
         foreach (string key in new[] { "title", "subtitle", "accent", "credit", "style", "font", "frame" })
             if (Str(t, key) != null) ini.Set(key, Str(t, key));
@@ -803,7 +811,8 @@ internal sealed partial class StudioForm : Form
             { "tintColor", string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", look.TintColor.R, look.TintColor.G, look.TintColor.B) },
             { "focusX", look.FocusX }, { "focusY", look.FocusY },
             { "clear", look.Clear }, { "clearSide", look.ClearSide }, { "glow", look.Glow },
-            { "vignette", look.Vignette }, { "sat", look.Sat }, { "fade", look.Fade }, { "fit", look.Fit }
+            { "vignette", look.Vignette }, { "sat", look.Sat }, { "fade", look.Fade }, { "fit", look.Fit },
+            { "drift", look.Drift }
         };
     }
 
@@ -823,7 +832,7 @@ internal sealed partial class StudioForm : Form
         Mutex running;
         if (!Mutex.TryOpenExisting(AppTable.ArtworkMutex, out running)) return false;
         running.Dispose();
-        return app == null || AppProfile.Load(app.SettingsDirectory).Watch;
+        return app == null || AppProfile.Load(app.SettingsDirectory, app.IsCustom).Watch;
     }
 
     // The settings slot a manual pick or apply lands in right now: the night
@@ -849,7 +858,7 @@ internal sealed partial class StudioForm : Form
             bool light = WindowsTheme.IsLight();
             foreach (App app in Apps)
             {
-                AppProfile profile = AppProfile.Load(app.SettingsDirectory);
+                AppProfile profile = AppProfile.Load(app.SettingsDirectory, app.IsCustom);
                 // What the helper last reported about this app's window.
                 IniFile status = IniFile.Load(Path.Combine(app.SettingsDirectory, "status.ini"));
                 // The theme select shows the slot that is actually on screen: the
@@ -868,7 +877,7 @@ internal sealed partial class StudioForm : Form
                     { "hideFullscreen", profile.HideFullscreen },
                     { "modeLight", light }, { "modeNight", night },
                     { "speed", profile.Speed }, { "style", profile.Style }, { "once", profile.SplashOnce }, { "watch", profile.Watch },
-                    { "installed", app.Installed }, { "preview", app.Preview },
+                    { "installed", app.Installed }, { "preview", app.Preview }, { "group", app.Group },
                     { "helperExists", helperExists },
                     { "helperRunning", HelperRunning(app) },
                     { "autostart", runEntry && profile.Watch },
@@ -975,7 +984,8 @@ internal sealed partial class StudioForm : Form
             brokenCache.TryGetValue(stamp, out broken);
             themes.Add(new Dictionary<string, object> {
                 { "name", name }, { "look", LookData(Look.Read(ini)) }, { "text", TextData(SplashText.Read(ini)) },
-                { "hasAvatar", File.Exists(Path.Combine(folder, "avatar.jpg")) }, { "stamp", ThemeLibrary.Stamp(name) },
+                { "hasAvatar", File.Exists(Path.Combine(folder, "avatar.jpg")) },
+                { "gif", File.Exists(Path.Combine(folder, "wallpaper.gif")) }, { "stamp", ThemeLibrary.Stamp(name) },
                 { "gradient", ini.Get("gradient") ?? "" }, { "created", Directory.GetCreationTimeUtc(folder).ToString("o") },
                 { "accents", accents }, { "broken", broken }
             });

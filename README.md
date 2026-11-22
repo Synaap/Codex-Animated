@@ -18,8 +18,10 @@ Themes, looks and the animation are edited in **Theme Studio**, and one theme li
 - **Five animation styles** — the original Full sequence, a three-second Card, Terminal, Manga and
   Minimal — with your own title, fonts, avatar frame and boot lines.
 - **Wallpaper inside the app**, on every window it opens. Clicks and typing go straight to the app.
+- **Moving wallpapers** — drop a `.gif` on a theme and it plays inside the app at the animation's
+  own pace; a still first frame is kept for the splash and previews.
 - **Looks that keep text readable** — visibility, blur, dim, tint, a clear zone on one side, glow,
-  vignette, a light-app mode and fit modes down to crisp pixel art.
+  vignette, a light-app mode, a subtle focus drift and fit modes down to crisp pixel art.
 - **Theme Studio** — live preview, undo, drag-and-drop import, shareable `.altheme` files, six starter
   themes painted in code, and a French or English interface.
 - **Variety** — rotate themes, follow Windows light and dark mode, give an app a night theme.
@@ -102,17 +104,21 @@ apps as they are.
   theme from an image, a folder of images, the desktop wallpaper, the clipboard or a gradient.
 - **The preview** shows the wallpaper behind a mock of the app (drag it to choose what stays in
   view; hold **C** to compare with the untouched picture) or plays the real animation page.
+- **Animated themes** — drop or pick a `.gif` anywhere an image is accepted and the theme moves.
+  Animated themes carry a small GIF badge in the list, and `.altheme` exports keep the animation.
 - **The inspector** on the right holds the look (presets plus fine tuning), the animation text,
   font, avatar and style, and the credit line. Edits save by themselves and reach running apps at
-  once; **Ctrl+Z** undoes them. **Use on** puts the theme on one app or on all of them.
+  once; **Ctrl+Z** undoes them. **Use on** puts the theme on one app — chips grouped under **AI**
+  and **Work in progress** tabs — or on all of them at once.
 - **Sharing**: **Export** writes one `.altheme` file you can send to anyone; **Import**, dropping a
   file on the window or double-clicking it brings it back. **Backup** and **Restore** cover the
   whole library. Importing never overwrites an existing theme.
 - **Apps and startup** sets, per app: its theme, the animation (on/off, speed, style, first start
   only), theme rotation, a light-mode and a night theme with their hours, extra dimming, hiding in
   full screen, and a live status line (attached, watching, off or parked).
-- **Settings**: the language (Same as Windows, English, Français), **Check for updates** with
-  one-click install, **Copy report** for bug reports, the logs folder and **Restart helpers**.
+- **Settings**: the language (Same as Windows, English, Français), a master **Startup animation**
+  switch for every app at once, **Check for updates** with one-click install, **Copy report** for
+  bug reports, the logs folder and **Restart helpers**.
 
 ![Theme Studio's welcome card offering six ready-made starter themes](docs/screenshots/studio-welcome.png)
 
