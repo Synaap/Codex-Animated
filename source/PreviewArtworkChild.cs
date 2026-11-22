@@ -14,18 +14,16 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
     private readonly uint parentThread;
     private readonly IntPtr dpiContext;
     private Bitmap image;
-    private byte alpha;
+    private Look look;
     private Size presented;
-    private int focusX = 50, focusY = 50;
     private bool enabled = true, imageChanged;
 
-    internal PreviewArtworkChild(IntPtr parent, uint expectedPid, Bitmap image, byte alpha, int focusX, int focusY)
+    internal PreviewArtworkChild(IntPtr parent, uint expectedPid, Bitmap image, Look look,
+        string product)
     {
         this.parent = parent;
-        this.focusX = focusX;
-        this.focusY = focusY;
+        this.look = look;
         this.image = image;
-        this.alpha = alpha;
         uint actualPid;
         parentThread = GetWindowThreadProcessId(parent, out actualPid);
         if (parentThread == 0 || actualPid != expectedPid || GetAncestor(parent, 2) != parent)
@@ -38,7 +36,7 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         {
             // Create as a child from the outset. No SetParent call or changes to the host.
             CreateHandle(new CreateParams {
-                Parent = parent, Caption = AppTarget.Product + " artwork preview", Style = 0x40000000,
+                Parent = parent, Caption = product + " artwork preview", Style = 0x40000000,
                 ExStyle = 0x80000 | 0x20 | 0x08000000 | 0x4, // LAYERED, TRANSPARENT, NOACTIVATE, NOPARENTNOTIFY
                 X = 0, Y = 0, Width = 1, Height = 1
             });
@@ -58,11 +56,10 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         imageChanged = true;
     }
 
-    internal void SetFocus(int x, int y)
+    internal void SetLook(Look value)
     {
-        if (focusX == x && focusY == y) return;
-        focusX = x;
-        focusY = y;
+        if (look.SamePresent(value)) return;
+        look = value;
         imageChanged = true;
     }
 
@@ -72,13 +69,6 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         enabled = value;
         if (Handle == IntPtr.Zero) return;
         if (!value) ShowWindow(Handle, 0);
-    }
-
-    internal void SetAlpha(byte value)
-    {
-        if (alpha == value) return;
-        alpha = value;
-        imageChanged = true;
     }
 
     internal bool RefreshSurface()
@@ -107,16 +97,22 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         }
         if (size != presented || imageChanged)
         {
-            using (var frame = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppRgb))
+            bool pixelPass = ArtworkLook.NeedsPixelPass(look);
+            using (var frame = new Bitmap(size.Width, size.Height,
+                pixelPass ? PixelFormat.Format32bppArgb : PixelFormat.Format32bppRgb))
             {
-                RectangleF crop = ArtworkLook.CoverSource(image.Size, size, focusX, focusY);
+                RectangleF crop; Rectangle dst; InterpolationMode mode;
+                ArtworkLook.FramePlan(image.Size, size, look, out crop, out dst, out mode);
                 using (var g = Graphics.FromImage(frame))
                 {
-                    g.InterpolationMode = InterpolationMode.Bilinear;
-                    g.DrawImage(image, new Rectangle(0, 0, size.Width, size.Height),
-                        crop, GraphicsUnit.Pixel);
+                    g.InterpolationMode = mode;
+                    if (mode == InterpolationMode.NearestNeighbor) g.PixelOffsetMode = PixelOffsetMode.Half;
+                    g.DrawImage(image, dst, crop, GraphicsUnit.Pixel);
                 }
-                IntPtr bitmap = frame.GetHbitmap(), dc = CreateCompatibleDC(IntPtr.Zero);
+                IntPtr bitmap = pixelPass
+                    ? ArtworkLook.AlphaDib(ArtworkLook.AlphaPixels(frame, look), size.Width, size.Height)
+                    : frame.GetHbitmap();
+                IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
                 IntPtr old = IntPtr.Zero;
                 try
                 {
@@ -125,7 +121,7 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
                     if (old == IntPtr.Zero || old == new IntPtr(-1)) throw new Win32Exception();
                     var from = new NativePoint();
                     var nativeSize = new NativeSize { W = size.Width, H = size.Height };
-                    var blend = new Blend { Alpha = alpha };
+                    var blend = new Blend { Alpha = look.Alpha, Format = pixelPass ? (byte)1 : (byte)0 };
                     // Null destination preserves the original child-relative (0,0) across parent moves.
                     if (!UpdateLayeredWindow(Handle, IntPtr.Zero, IntPtr.Zero, ref nativeSize, dc,
                         ref from, 0, ref blend, 2)) throw new Win32Exception();

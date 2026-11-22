@@ -7,9 +7,12 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -20,8 +23,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Theme Studio")]
 [assembly: AssemblyProduct("Theme Studio")]
 [assembly: AssemblyDescription("Theme library and look editor for the Animated launchers")]
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyVersion("3.0.0.0")]
+[assembly: AssemblyFileVersion("3.0.0.0")]
 
 internal static class ThemeStudioProgram
 {
@@ -42,6 +45,8 @@ internal static class ThemeStudioProgram
             {
                 if (!evalMode)
                 {
+                    string import = ArgValue(args, "--import");
+                    if (import != null) import = Path.GetFullPath(import);
                     uint self = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
                     foreach (var other in System.Diagnostics.Process.GetProcessesByName("ThemeStudio"))
                         using (other)
@@ -49,6 +54,7 @@ internal static class ThemeStudioProgram
                             if ((uint)other.Id == self) continue;
                             IntPtr existing = other.MainWindowHandle;
                             if (existing == IntPtr.Zero) continue;
+                            if (import != null) SendImport(existing, import);
                             if (IsIconic(existing)) ShowWindow(existing, 9);
                             SetForegroundWindow(existing);
                             break;
@@ -74,6 +80,41 @@ internal static class ThemeStudioProgram
         }
     }
 
+    internal static string ArgValue(string[] args, string name)
+    {
+        for (int i = 0; i + 1 < args.Length; i++)
+            if (string.Equals(args[i], name, StringComparison.Ordinal)) return args[i + 1];
+        return null;
+    }
+
+    // A second instance's --import <file> lands on the first window's WndProc.
+    internal const int ImportCopyCode = 0xA17BE;
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct CopyData { public IntPtr code; public int length; public IntPtr text; }
+
+    private static void SendImport(IntPtr window, string path)
+    {
+        byte[] bytes = Encoding.Unicode.GetBytes(path);
+        IntPtr text = Marshal.AllocHGlobal(bytes.Length);
+        IntPtr box = IntPtr.Zero;
+        try
+        {
+            Marshal.Copy(bytes, 0, text, bytes.Length);
+            var data = new CopyData { code = (IntPtr)ImportCopyCode, length = bytes.Length, text = text };
+            box = Marshal.AllocHGlobal(Marshal.SizeOf(data));
+            Marshal.StructureToPtr(data, box, false);
+            SendMessage(window, 0x004A, IntPtr.Zero, box); // WM_COPYDATA
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(text);
+            if (box != IntPtr.Zero) Marshal.FreeHGlobal(box);
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+
     // Keep WebView2 references out of Main until the assembly resolver is installed.
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Run(string[] args)
@@ -84,26 +125,26 @@ internal static class ThemeStudioProgram
         return 0;
     }
 
-    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
-    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
-    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr window);
 }
 
-internal sealed class StudioApp
-{
-    internal readonly string Id, Name, Product, Helper;
-    internal StudioApp(string id, string name) { Id = id; Name = name; Product = name + " Animated"; Helper = name + "Animated"; }
-    internal string Root { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Product); } }
-}
-
-internal sealed class StudioForm : Form
+internal sealed partial class StudioForm : Form
 {
     private const string Origin = "https://studio.invalid/";
-    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private static readonly StudioApp[] Apps = { new StudioApp("devin", "Devin"), new StudioApp("antigravity", "Antigravity"), new StudioApp("codex", "Codex"), new StudioApp("claude", "Claude") };
+    private static App[] Apps { get { return AppTable.WithCustom(); } }
     private static readonly string[] Commands = {
         "state", "saveTheme", "applyTheme", "createTheme", "renameTheme", "deleteTheme", "replaceWallpaper",
-        "setAvatar", "clearAvatar", "setApp", "setAutostart", "startHelper", "playSplash" };
+        "setAvatar", "clearAvatar", "setApp", "setAutostart", "startHelper", "playSplash",
+        "exportTheme", "importTheme", "importAnyData", "createThemeData", "duplicateTheme",
+        "openThemesFolder", "backupLibrary", "restoreLibrary",
+        "saveLookPreset", "deleteLookPreset", "applyLookPreset",
+        "pickAppExe", "probeApp", "addCustomApp", "removeCustomApp",
+        "useDesktopWallpaper", "pasteImage", "importFolder",
+        "cropAvatar", "createGradient", "editGradient", "setPrefs", "seedStarters", "starterPreview",
+        "checkReadability", "copyReport", "openLogFolder", "restartHelpers",
+        "checkUpdates", "getUpdate" };
 
     private readonly WebView2 browser;
     private readonly string[] args;
@@ -132,7 +173,7 @@ internal sealed class StudioForm : Form
         StartPosition = FormStartPosition.Manual;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (ArgumentException) { }
         PlaceWindow();
-        browser = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor, AllowExternalDrop = false };
+        browser = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor, AllowExternalDrop = true };
         Controls.Add(browser);
         Shown += Start;
         evalTimer.Interval = 150;
@@ -264,6 +305,18 @@ internal sealed class StudioForm : Form
             string hash = "";
             for (int i = 0; i + 1 < args.Length; i++)
                 if (args[i] == "--open") hash = "#" + args[i + 1].Replace(" ", "%20");
+            string import = ThemeStudioProgram.ArgValue(args, "--import");
+            if (import != null)
+            {
+                try { hash = "#theme=" + Uri.EscapeDataString(ThemePack.Import(import)); }
+                catch (Exception error)
+                {
+                    if (!(error is IOException || error is InvalidDataException || error is UnauthorizedAccessException ||
+                        error is ArgumentException || error is ExternalException || error is NotSupportedException)) throw;
+                    MessageBox.Show("The theme file could not be imported.\n\n" + error.GetBaseException().Message,
+                        "Theme Studio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
             core.Navigate(Origin + "index.html" + hash);
             if (evalMode) evalTimer.Start();
         }
@@ -336,7 +389,7 @@ internal sealed class StudioForm : Form
 
     private byte[] Route(string[] s, Dictionary<string, string> q, ref string type)
     {
-        if (s.Length == 1 && (s[0] == "index.html" || s[0] == "studio.css" || s[0] == "studio.js"))
+        if (s.Length == 1 && (s[0] == "index.html" || s[0] == "studio.css" || s[0] == "studio.js" || s[0] == "strings.js"))
         {
             type = s[0].EndsWith(".html") ? "text/html; charset=utf-8" : s[0].EndsWith(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8";
             return PageFile(s[0]);
@@ -433,7 +486,8 @@ internal sealed class StudioForm : Form
                 previewKey = key;
             }
         }
-        var look = new Look { Blur = Number(q, "blur", 0, 0, 100), Dim = Number(q, "dim", 0, 0, 80), Tint = Number(q, "tint", 0, 0, 100) };
+        var look = new Look { Blur = Number(q, "blur", 0, 0, 100), Dim = Number(q, "dim", 0, 0, 80),
+            Tint = Number(q, "tint", 0, 0, 100), Sat = Number(q, "sat", 100, 0, 150), Fade = Number(q, "fade", 0, 0, 100) };
         Color tint;
         string tintText;
         if (q.TryGetValue("tintColor", out tintText) && SplashText.TryParseColor(tintText, out tint)) look.TintColor = tint;
@@ -454,7 +508,7 @@ internal sealed class StudioForm : Form
             {
                 string id;
                 q.TryGetValue("app", out id);
-                StudioApp app = FindApp(id) ?? Apps[0];
+                App app = FindApp(id) ?? Apps[0];
                 byte[] wallpaper = ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg"));
                 Size size;
                 using (var memory = new MemoryStream(wallpaper, false))
@@ -481,15 +535,15 @@ internal sealed class StudioForm : Form
 
     // ---- bridge ----
 
-    private static StudioApp FindApp(string id)
+    private static App FindApp(string id)
     {
-        foreach (StudioApp app in Apps) if (string.Equals(app.Id, id, StringComparison.Ordinal)) return app;
+        foreach (App app in Apps) if (string.Equals(app.Id, id, StringComparison.Ordinal)) return app;
         return null;
     }
 
     private static IEnumerable<string> AppRoots()
     {
-        foreach (StudioApp app in Apps) yield return app.Root;
+        foreach (App app in Apps) yield return app.SettingsDirectory;
     }
 
     private void OnMessage(object sender, CoreWebView2WebMessageReceivedEventArgs a)
@@ -554,6 +608,13 @@ internal sealed class StudioForm : Form
         try { return Convert.ToInt32(v, CultureInfo.InvariantCulture); } catch (FormatException) { return fallback; } catch (InvalidCastException) { return fallback; }
     }
 
+    private static double Num(Dictionary<string, object> d, string key, double fallback)
+    {
+        object v;
+        if (!d.TryGetValue(key, out v) || v == null) return fallback;
+        try { return Convert.ToDouble(v, CultureInfo.InvariantCulture); } catch (FormatException) { return fallback; } catch (InvalidCastException) { return fallback; }
+    }
+
     private string ExistingTheme(Dictionary<string, object> m)
     {
         string name = ThemeLibrary.Exact(Str(m, "name"));
@@ -561,134 +622,59 @@ internal sealed class StudioForm : Form
         return name;
     }
 
-    private object Execute(string cmd, Dictionary<string, object> m)
+    // A dropped file's bytes land in a temporary file so the file-based paths
+    // apply. Its own folder keeps the real name, which names the new theme.
+    private const long MaxDropBytes = 40L * 1024 * 1024;
+    private string TempDataFile(Dictionary<string, object> m)
     {
-        switch (cmd)
-        {
-            case "state": return State();
-            case "saveTheme": return SaveTheme(m);
-            case "applyTheme":
-            {
-                string name = ExistingTheme(m);
-                string target = Str(m, "app");
-                if (target == "all") foreach (StudioApp app in Apps) ThemeLibrary.Apply(name, app.Root);
-                else
-                {
-                    StudioApp app = FindApp(target);
-                    if (app == null) throw new ArgumentException("Unknown app.");
-                    ThemeLibrary.Apply(name, app.Root);
-                }
-                return AppList();
-            }
-            case "createTheme":
-            {
-                string path = TestPath(m) ?? PickImage("Choose a wallpaper image");
-                if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
-                string created = ThemeLibrary.Create(path);
-                Dictionary<string, object> state = State();
-                state["created"] = created;
-                return state;
-            }
-            case "renameTheme":
-            {
-                string name = ExistingTheme(m);
-                string renamed = ThemeLibrary.Rename(name, Str(m, "newName"), AppRoots());
-                Dictionary<string, object> state = State();
-                state["renamed"] = renamed;
-                return state;
-            }
-            case "deleteTheme":
-            {
-                string name = ExistingTheme(m);
-                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(ThemeLibrary.Folder(name),
-                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                ThemeLibrary.ClearReferences(name, AppRoots());
-                return State();
-            }
-            case "replaceWallpaper":
-            {
-                string name = ExistingTheme(m);
-                string path = TestPath(m) ?? PickImage("Choose a wallpaper image");
-                if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
-                byte[] jpeg = ImageCodec.ToJpeg(path);
-                using (ImageCodec.DecodeJpeg(jpeg)) { }
-                string target = Path.Combine(ThemeLibrary.Folder(name), "wallpaper.jpg");
-                ThemeLibrary.WithLock(ThemeLibrary.Folder(name), delegate { ImageCodec.SaveAtomic(target, jpeg); });
-                ReapplyTo(name);
-                return State();
-            }
-            case "setAvatar":
-            {
-                string name = ExistingTheme(m);
-                string path = TestPath(m) ?? PickImage("Choose an avatar image");
-                if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
-                byte[] jpeg = ImageCodec.ToJpeg(path);
-                using (ImageCodec.DecodeJpeg(jpeg)) { }
-                string target = Path.Combine(ThemeLibrary.Folder(name), "avatar.jpg");
-                ThemeLibrary.WithLock(ThemeLibrary.Folder(name), delegate { ImageCodec.SaveAtomic(target, jpeg); });
-                ReapplyTo(name);
-                return State();
-            }
-            case "clearAvatar":
-            {
-                string name = ExistingTheme(m);
-                string target = Path.Combine(ThemeLibrary.Folder(name), "avatar.jpg");
-                ThemeLibrary.WithLock(ThemeLibrary.Folder(name), delegate { File.Delete(target); });
-                ReapplyTo(name);
-                return State();
-            }
-            case "setApp":
-            {
-                StudioApp app = FindApp(Str(m, "app"));
-                if (app == null) throw new ArgumentException("Unknown app.");
-                AppProfile profile = AppProfile.LoadStrict(app.Root);
-                if (m.ContainsKey("splash")) profile.SplashOnStart = Flag(m, "splash");
-                if (m.ContainsKey("speed")) profile.Speed = Int(m, "speed", 1) == 2 ? 2 : 1;
-                profile.Save();
-                return AppList();
-            }
-            case "setAutostart":
-            {
-                StudioApp app = FindApp(Str(m, "app"));
-                if (app == null) throw new ArgumentException("Unknown app.");
-                using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
-                {
-                    if (Flag(m, "on"))
-                        key.SetValue(app.Helper, "\"" + Path.Combine(StudioFolder(), app.Helper + ".exe") + "\" --artwork");
-                    else key.DeleteValue(app.Helper, false);
-                }
-                return AppList();
-            }
-            case "startHelper":
-            {
-                StudioApp app = FindApp(Str(m, "app"));
-                if (app == null) throw new ArgumentException("Unknown app.");
-                string exe = Path.Combine(StudioFolder(), app.Helper + ".exe");
-                if (!File.Exists(exe)) throw new FileNotFoundException(app.Helper + ".exe is not next to Theme Studio, so the helper can't be started.");
-                using (Process.Start(new ProcessStartInfo(exe, "--artwork") { UseShellExecute = false })) { }
-                for (int i = 0; i < 15 && !HelperRunning(app); i++) Thread.Sleep(100);
-                return AppList();
-            }
-            case "playSplash":
-            {
-                string name = ExistingTheme(m);
-                StudioApp app = FindApp(Str(m, "app"));
-                if (app == null) throw new ArgumentException("Unknown app.");
-                string exe = Path.Combine(StudioFolder(), app.Helper + ".exe");
-                string arguments = "--preview \"" + ThemeLibrary.Folder(name) + "\" " + Handle64();
-                if (evalMode && Flag(m, "dryRun"))
-                    return new Dictionary<string, object> { { "exe", exe }, { "args", arguments }, { "hwnd", Handle64() } };
-                if (!File.Exists(exe)) throw new FileNotFoundException(app.Helper + ".exe is not next to Theme Studio, so the animation can't be played.");
-                using (Process.Start(new ProcessStartInfo(exe, arguments) { UseShellExecute = false })) { }
-                return new Dictionary<string, object>();
-            }
-        }
-        throw new ArgumentException("Unknown command.");
+        string data = Str(m, "data");
+        if (string.IsNullOrEmpty(data)) throw new ArgumentException("No file was sent.");
+        byte[] bytes = Convert.FromBase64String(data);
+        if (bytes.Length <= 0 || bytes.Length > MaxDropBytes)
+            throw new InvalidDataException("That file is too big to drop here. Use the file button instead.");
+        string name = Path.GetFileName(Str(m, "fileName") ?? "dropped");
+        string folder = Path.Combine(Path.GetTempPath(), "AnimatedLaunchers-drop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        string temp = Path.Combine(folder, name.Length == 0 ? "dropped" : name);
+        File.WriteAllBytes(temp, bytes);
+        return temp;
+    }
+
+    private static void DeleteTemp(string path)
+    {
+        try { File.Delete(path); Directory.Delete(Path.GetDirectoryName(path)); }
+        catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentException) { }
     }
 
     private string Handle64() { return Handle.ToInt64().ToString(CultureInfo.InvariantCulture); }
 
     private static string StudioFolder() { return Path.GetDirectoryName(Application.ExecutablePath); }
+
+    // The window class of a running program's visible top-level window, or null
+    // when it has none right now (not running, or no matching window).
+    private static string WindowClassOf(string exePath)
+    {
+        App probe = App.Custom("_probe", "probe", exePath);
+        string found = null;
+        EnumWindowsProc enumProc = delegate(IntPtr window, IntPtr param) {
+            if (!IsWindowVisible(window) || GetWindow(window, 4) != IntPtr.Zero) return true;
+            uint pid;
+            if (GetWindowThreadProcessId(window, out pid) == 0 || !probe.OwnsProcess(pid)) return true;
+            var cls = new StringBuilder(128);
+            GetClassNameW(window, cls, cls.Capacity);
+            found = cls.ToString();
+            return false;
+        };
+        EnumWindows(enumProc, IntPtr.Zero);
+        return found;
+    }
+
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr param);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr window, StringBuilder output, int length);
 
     private string TestPath(Dictionary<string, object> m)
     {
@@ -706,10 +692,82 @@ internal sealed class StudioForm : Form
             return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
 
+    private string PickFolder()
+    {
+        using (var dialog = new FolderBrowserDialog { Description = "Choose a folder of images", ShowNewFolderButton = false })
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : null;
+    }
+
+    // The file behind the desktop wallpaper: the SPI path, or the transcoded
+    // copy Windows keeps for slideshows. Null when no picture is set.
+    private static string DesktopWallpaperPath()
+    {
+        var buffer = new StringBuilder(260);
+        if (SystemParametersInfo(0x0073, buffer.Capacity, buffer, 0))
+        {
+            string path = buffer.ToString();
+            if (path.Length > 0 && File.Exists(path)) return path;
+        }
+        string transcoded = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            @"Microsoft\Windows\Themes\TranscodedWallpaper");
+        return File.Exists(transcoded) ? transcoded : null;
+    }
+
+    // The clipboard picture as jpeg bytes, or null when no image is held.
+    private static byte[] ClipboardJpeg()
+    {
+        Image held = Clipboard.GetImage();
+        if (held == null) return null;
+        try
+        {
+            using (held)
+            using (var bitmap = new Bitmap(held.Width, held.Height, PixelFormat.Format24bppRgb))
+            {
+                using (var g = Graphics.FromImage(bitmap)) g.DrawImageUnscaled(held, 0, 0);
+                return ImageCodec.EncodeJpeg(bitmap);
+            }
+        }
+        catch (ExternalException) { return null; }
+    }
+
+    // g1|g2|degrees message fields -> a validated spec. error explains a refusal.
+    private static bool TryGradient(Dictionary<string, object> m, out GradientSpec spec, out string error)
+    {
+        spec = new GradientSpec();
+        string text = (Str(m, "from") ?? "").Trim() + "|" + (Str(m, "to") ?? "").Trim() + "|" +
+            (Str(m, "degrees") ?? "0").Trim();
+        if (!GradientSpec.TryParse(text, out spec)) { error = "Pick two colours like #RRGGBB."; return false; }
+        error = null;
+        return true;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool SystemParametersInfo(uint action, int size, StringBuilder value, uint update);
+
+    private string PickFile(string title, string filter)
+    {
+        using (var dialog = new OpenFileDialog { Title = title, RestoreDirectory = true, Filter = filter })
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
+    private string PickSave(string title, string fileName, string filter)
+    {
+        using (var dialog = new SaveFileDialog {
+            Title = title, RestoreDirectory = true, Filter = filter, FileName = fileName, OverwritePrompt = true
+        })
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
+    // Pushes a theme's new files to the apps showing it, through the slot it holds
+    // there, so a night or light-mode pick keeps its place and applied= stays true.
     private void ReapplyTo(string name)
     {
         foreach (string root in AppRoots())
-            if (ThemeLibrary.UsesTheme(root, name)) ThemeLibrary.Apply(name, root);
+        {
+            string slot = ThemeLibrary.ShowingSlot(root, name);
+            if (slot != null) ThemeLibrary.ApplyForMode(name, root, slot);
+        }
     }
 
     private object SaveTheme(Dictionary<string, object> m)
@@ -718,16 +776,20 @@ internal sealed class StudioForm : Form
         Dictionary<string, object> l = Obj(m, "look") ?? new Dictionary<string, object>();
         Dictionary<string, object> t = Obj(m, "text") ?? new Dictionary<string, object>();
         var ini = new IniFile();
-        foreach (string key in new[] { "opacity", "blur", "dim", "tint", "tintColor", "focusX", "focusY" })
+        foreach (string key in new[] { "opacity", "blur", "dim", "tint", "tintColor", "focusX", "focusY",
+            "clear", "clearSide", "glow", "vignette", "sat", "fade", "fit" })
             if (Str(l, key) != null) ini.Set(key, Str(l, key));
-        foreach (string key in new[] { "title", "subtitle", "accent" })
+        foreach (string key in new[] { "title", "subtitle", "accent", "credit", "style", "font", "frame" })
             if (Str(t, key) != null) ini.Set(key, Str(t, key));
-        object logs;
-        if (t.TryGetValue("logs", out logs) && logs is System.Collections.IEnumerable && !(logs is string))
+        foreach (string key in new[] { "logs", "lines" })
         {
-            var lines = new List<string>();
-            foreach (object line in (System.Collections.IEnumerable)logs) lines.Add(Convert.ToString(line, CultureInfo.InvariantCulture));
-            ini.Set("logs", string.Join("|", lines.ToArray()));
+            object values;
+            if (t.TryGetValue(key, out values) && values is System.Collections.IEnumerable && !(values is string))
+            {
+                var lines = new List<string>();
+                foreach (object line in (System.Collections.IEnumerable)values) lines.Add(Convert.ToString(line, CultureInfo.InvariantCulture));
+                ini.Set(key, string.Join("|", lines.ToArray()));
+            }
         }
         SplashText stored;
         Look clamped = ThemeLibrary.Save(name, Look.Read(ini), SplashText.Read(ini), AppRoots(), out stored);
@@ -739,39 +801,145 @@ internal sealed class StudioForm : Form
         return new Dictionary<string, object> {
             { "opacity", look.Opacity }, { "blur", look.Blur }, { "dim", look.Dim }, { "tint", look.Tint },
             { "tintColor", string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", look.TintColor.R, look.TintColor.G, look.TintColor.B) },
-            { "focusX", look.FocusX }, { "focusY", look.FocusY }
+            { "focusX", look.FocusX }, { "focusY", look.FocusY },
+            { "clear", look.Clear }, { "clearSide", look.ClearSide }, { "glow", look.Glow },
+            { "vignette", look.Vignette }, { "sat", look.Sat }, { "fade", look.Fade }, { "fit", look.Fit }
         };
     }
 
     private static Dictionary<string, object> TextData(SplashText text)
     {
         return new Dictionary<string, object> {
-            { "title", text.Title }, { "subtitle", text.Subtitle }, { "accent", text.Accent }, { "logs", text.Logs }
+            { "title", text.Title }, { "subtitle", text.Subtitle }, { "accent", text.Accent }, { "logs", text.Logs },
+            { "credit", text.Credit }, { "style", text.Style }, { "font", text.Font }, { "frame", text.Frame },
+            { "lines", text.Lines }
         };
     }
 
-    private bool HelperRunning(StudioApp app)
+    // The shared wallpaper helper, or this app's part of it: the process is up and
+    // the app is watched. Pass an app for the per-app answer.
+    private bool HelperRunning(App app = null)
     {
         Mutex running;
-        if (!Mutex.TryOpenExisting(@"Local\" + app.Helper + "Splash.Artwork", out running)) return false;
+        if (!Mutex.TryOpenExisting(AppTable.ArtworkMutex, out running)) return false;
         running.Dispose();
-        return true;
+        return app == null || AppProfile.Load(app.SettingsDirectory).Watch;
+    }
+
+    // The settings slot a manual pick or apply lands in right now: the night
+    // pick inside its window, the Windows-light pick while follow is on, else
+    // theme=. The session's DesiredSlot mirrors this.
+    private static string SlotFor(AppProfile profile)
+    {
+        if (profile.ThemeNight.Length > 0 &&
+            ThemeLibrary.IsNight(profile.NightStart, profile.NightUntil, DateTime.Now.Hour))
+            return "themeNight";
+        if (profile.FollowWindows && WindowsTheme.IsLight() && profile.ThemeLight.Length > 0)
+            return "themeLight";
+        return "theme";
     }
 
     private object AppList()
     {
         var list = new List<object>();
-        using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-            foreach (StudioApp app in Apps)
+        bool helperExists = File.Exists(Path.Combine(StudioFolder(), AppTable.HelperExeName));
+        using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AppTable.RunKey))
+        {
+            bool runEntry = key != null && key.GetValue(AppTable.RunValueName) != null;
+            bool light = WindowsTheme.IsLight();
+            foreach (App app in Apps)
             {
-                AppProfile profile = AppProfile.Load(app.Root);
-                list.Add(new Dictionary<string, object> {
-                    { "id", app.Id }, { "name", app.Name }, { "theme", profile.Theme }, { "splash", profile.SplashOnStart },
-                    { "speed", profile.Speed }, { "helperExists", File.Exists(Path.Combine(StudioFolder(), app.Helper + ".exe")) },
-                    { "helperRunning", HelperRunning(app) }, { "autostart", key != null && key.GetValue(app.Helper) != null }
-                });
+                AppProfile profile = AppProfile.Load(app.SettingsDirectory);
+                // What the helper last reported about this app's window.
+                IniFile status = IniFile.Load(Path.Combine(app.SettingsDirectory, "status.ini"));
+                // The theme select shows the slot that is actually on screen: the
+                // night pick inside its window, the light pick in follow mode.
+                string slot = SlotFor(profile);
+                string shown = slot == "themeNight" ? profile.ThemeNight :
+                    slot == "themeLight" ? profile.ThemeLight : profile.Theme;
+                bool night = ThemeLibrary.IsNight(profile.NightStart, profile.NightUntil, DateTime.Now.Hour);
+                var row = new Dictionary<string, object> {
+                    { "id", app.Id }, { "name", app.Name }, { "theme", shown }, { "splash", profile.SplashOnStart },
+                    { "rotate", profile.Rotate }, { "rotateFavs", profile.RotateFavs },
+                    { "followWindows", profile.FollowWindows }, { "themeLight", profile.ThemeLight },
+                    { "themeNight", profile.ThemeNight },
+                    { "nightStart", profile.NightStart }, { "nightUntil", profile.NightUntil },
+                    { "nightDim", profile.NightDim }, { "extraDim", profile.ExtraDim },
+                    { "hideFullscreen", profile.HideFullscreen },
+                    { "modeLight", light }, { "modeNight", night },
+                    { "speed", profile.Speed }, { "style", profile.Style }, { "once", profile.SplashOnce }, { "watch", profile.Watch },
+                    { "installed", app.Installed }, { "preview", app.Preview },
+                    { "helperExists", helperExists },
+                    { "helperRunning", HelperRunning(app) },
+                    { "autostart", runEntry && profile.Watch },
+                    { "status", status.Get("status") ?? "" },
+                    { "problem", status.Get("problem") ?? "" },
+                    { "statusWhen", status.Get("when") ?? "" }
+                };
+                if (app.IsCustom) { row["custom"] = true; row["exe"] = app.CustomExe; }
+                list.Add(row);
             }
+        }
         return list;
+    }
+
+    // Plain-text status report for bug reports; mirrors the Apps page, plus the
+    // last problem each session wrote to status.ini.
+    private string BuildReport()
+    {
+        var text = new StringBuilder();
+        text.AppendLine("Animated Launchers report");
+        text.AppendLine("Theme Studio " + Application.ProductVersion + " - " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm") + " UTC");
+        text.AppendLine("Windows " + Environment.OSVersion.VersionString);
+        text.AppendLine();
+        foreach (Dictionary<string, object> row in (List<object>)AppList())
+        {
+            text.Append(row["name"]).Append(" (").Append(row["id"]).Append(")");
+            if ((bool)row["installed"]) text.Append(" installed"); else text.Append(" not installed");
+            if (!(bool)row["watch"]) text.Append(", watching off");
+            if ((bool)row["helperRunning"]) text.Append(", helper on");
+            if ((bool)row["autostart"]) text.Append(", autostart");
+            text.Append(", theme: ").Append(row["theme"]);
+            string status = (string)row["status"];
+            string problem = (string)row["problem"];
+            if (status != "") text.Append(", wallpaper: ").Append(status);
+            if (problem != "") text.Append(", problem: ").Append(problem);
+            text.AppendLine();
+        }
+        // The tail of each helper log, so a pasted report carries the errors too.
+        var logs = new List<string>();
+        logs.Add(Path.Combine(ThemeLibrary.SharedRoot, "Logs", "helper.log"));
+        foreach (App app in Apps)
+            logs.Add(Path.Combine(app.SettingsDirectory, "Logs", "helper.log"));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in logs)
+        {
+            if (!seen.Add(file)) continue;
+            string tail;
+            try
+            {
+                if (!File.Exists(file)) continue;
+                using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    long skip = Math.Max(0, stream.Length - 8192);
+                    stream.Position = skip;
+                    var bytes = new byte[stream.Length - skip];
+                    int read = 0, n;
+                    while (read < bytes.Length && (n = stream.Read(bytes, read, bytes.Length - read)) > 0) read += n;
+                    // Start after the first line break, so the tail never opens mid-line
+                    // (a StreamReader would have buffered past it).
+                    int start = 0;
+                    if (skip > 0) { int nl = Array.IndexOf(bytes, (byte)'\n', 0, read); start = nl < 0 ? read : nl + 1; }
+                    tail = Encoding.UTF8.GetString(bytes, start, read - start);
+                }
+            }
+            catch (Exception) { continue; }
+            if (tail.Trim().Length == 0) continue;
+            text.AppendLine();
+            text.AppendLine("--- " + file.Replace(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "%LOCALAPPDATA%") + " ---");
+            text.Append(tail);
+        }
+        return text.ToString();
     }
 
     private Dictionary<string, object> State()
@@ -808,14 +976,74 @@ internal sealed class StudioForm : Form
             themes.Add(new Dictionary<string, object> {
                 { "name", name }, { "look", LookData(Look.Read(ini)) }, { "text", TextData(SplashText.Read(ini)) },
                 { "hasAvatar", File.Exists(Path.Combine(folder, "avatar.jpg")) }, { "stamp", ThemeLibrary.Stamp(name) },
+                { "gradient", ini.Get("gradient") ?? "" }, { "created", Directory.GetCreationTimeUtc(folder).ToString("o") },
                 { "accents", accents }, { "broken", broken }
             });
         }
         Rectangle area = Screen.FromControl(this).WorkingArea;
         return new Dictionary<string, object> {
-            { "themes", themes }, { "apps", AppList() },
+            { "themes", themes }, { "apps", AppList() }, { "looks", LookPresets.Names() },
+            { "prefs", Prefs() }, { "version", Application.ProductVersion },
             { "screen", new Dictionary<string, object> { { "w", area.Width }, { "h", area.Height } } }
         };
+    }
+
+    // Studio-window prefs in studio.ini: favorites is a |-list of theme names,
+    // sort is name|favorites|newest. Unknown keys (window position) survive untouched.
+    private static Dictionary<string, object> Prefs()
+    {
+        IniFile ini = IniFile.Load(StudioIni);
+        string sort = (ini.Get("sort") ?? "name").Trim().ToLowerInvariant();
+        if (sort != "favorites" && sort != "newest") sort = "name";
+        var favorites = new List<object>();
+        foreach (string part in (ini.Get("favorites") ?? "").Split('|'))
+        {
+            string exact = ThemeLibrary.Exact(part.Trim());
+            if (exact != null && !favorites.Contains(exact)) favorites.Add(exact);
+        }
+        bool welcome = !string.Equals((ini.Get("welcome") ?? "on").Trim(), "off", StringComparison.OrdinalIgnoreCase);
+        return new Dictionary<string, object> { { "favorites", favorites }, { "sort", sort }, { "welcome", welcome }, { "lang", (ini.Get("lang") ?? "").Trim() } };
+    }
+
+    // A second instance's --import <file> arrives as WM_COPYDATA; the first
+    // instance imports it and tells the page.
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x004A) // WM_COPYDATA
+        {
+            var data = (ThemeStudioProgram.CopyData)Marshal.PtrToStructure(m.LParam, typeof(ThemeStudioProgram.CopyData));
+            if (data.code == (IntPtr)ThemeStudioProgram.ImportCopyCode && data.length > 0 &&
+                data.length < 8192 && data.length % 2 == 0 && data.text != IntPtr.Zero)
+            {
+                string path = Marshal.PtrToStringUni(data.text, data.length / 2);
+                if (!string.IsNullOrEmpty(path)) BeginInvoke(new Action<string>(ReceiveImport), path);
+            }
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    private void ReceiveImport(string path)
+    {
+        if (!File.Exists(path)) return;
+        try
+        {
+            string imported = ThemePack.Import(path);
+            Dictionary<string, object> state = State();
+            state["imported"] = imported;
+            var push = new Dictionary<string, object> { { "event", "imported" }, { "state", state } };
+            if (browser.CoreWebView2 != null)
+                browser.CoreWebView2.PostWebMessageAsJson(json.Serialize(push));
+            if (ThemeStudioProgram.IsIconic(Handle)) ThemeStudioProgram.ShowWindow(Handle, 9);
+            ThemeStudioProgram.SetForegroundWindow(Handle);
+        }
+        catch (Exception error)
+        {
+            if (!(error is IOException || error is InvalidDataException || error is UnauthorizedAccessException ||
+                error is ArgumentException || error is ExternalException || error is NotSupportedException)) throw;
+            MessageBox.Show("The theme file could not be imported.\n\n" + error.GetBaseException().Message,
+                "Theme Studio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     // ---- eval hook (tests only, ANIMATED_STUDIO_EVAL=<file>) ----

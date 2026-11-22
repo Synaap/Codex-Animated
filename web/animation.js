@@ -10,12 +10,116 @@
   const sweep = $('.light-sweep');
   const subtitle = $('.subtitle');
   const duration = 12000;
-  const rate = root.dataset.rate === '2' ? 2 : 1;
+  const rate = Math.max(1, Math.min(4, parseInt(root.dataset.rate, 10) || 1));
+  const style = root.dataset.style || 'full';
   const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
   const stillParam = parseFloat(new URLSearchParams(location.search).get('still'));
   const still = stillParam > 0 ? stillParam : 0;
   if (still) root.dataset.still = '1';
+  // Alternative animation skins. Each is a self-contained {duration, prepare(),
+  // render(t)} that injects its own nodes and hides the full-skin chrome via
+  // [data-style] CSS; reduced motion falls back to the calm card for all of them.
+  const SKINS = {
+    terminal: {
+      duration: 9000,
+      prepare() {
+        this.lines = Array.from(document.querySelectorAll('.boot-logs div')).map(d => d.textContent);
+        this.lines.push('> ' + $('.boot-title').textContent);
+        const term = document.createElement('pre');
+        term.className = 'term';
+        term.innerHTML = this.lines.map(() => '<div class="tl"></div>').join('') +
+          '<div class="tbar"></div><div class="tready"></div><i class="cursor"></i>';
+        scene.appendChild(term);
+        this.term = term;
+      },
+      render(t) {
+        const s = t / 1000;
+        this.term.querySelectorAll('.tl').forEach((el, i) => {
+          const start = .3 + i * .62, typed = Math.floor(Math.max(0, s - start) / .018);
+          const text = this.lines[i] || '';
+          el.textContent = typed <= 0 ? '' : text.slice(0, Math.min(text.length, typed));
+        });
+        const fill = Math.round(clamp((s - 4.6) / 4) * 14);
+        this.term.querySelector('.tbar').textContent =
+          `> [${'='.repeat(fill)}${fill < 14 ? '>' : ''}${' '.repeat(Math.max(0, 14 - fill - 1))}] ${(clamp((s - 4.6) / 4) * 100).toFixed(0).padStart(3)}%`;
+        this.term.querySelector('.tready').textContent = s >= 8.1 ? '> READY' : '';
+        art.style.opacity = String(.5 * smooth((s - 4.4) / 3));
+        scene.style.opacity = String(1 - smooth((s - 8.4) / .6));
+        root.dataset.elapsed = s.toFixed(2);
+        root.dataset.stage = 'terminal';
+      }
+    },
+    manga: {
+      duration: 8000,
+      prepare() {
+        const panel = document.createElement('div');
+        panel.className = 'manga-panel';
+        panel.appendChild(art);
+        const dots = document.createElement('div');
+        dots.className = 'halftone';
+        panel.appendChild(dots);
+        scene.appendChild(panel);
+        const lines = document.createElement('div');
+        lines.className = 'speedlines';
+        scene.appendChild(lines);
+        const stamp = document.createElement('div');
+        stamp.className = 'manga-title';
+        stamp.textContent = $('.boot-title').textContent;
+        scene.appendChild(stamp);
+        this.panel = panel; this.lines = lines; this.stamp = stamp;
+      },
+      render(t) {
+        const s = t / 1000;
+        const k = smooth((s - .5) / .8);
+        const overshoot = 1 + .1 * Math.sin(clamp((s - 1.3) / .5) * Math.PI);
+        art.style.opacity = String(smooth((s - .7) / 1.1));
+        this.panel.style.opacity = String(Math.min(1, k * 1.6));
+        this.panel.style.transform = `translate(-50%,-50%) rotate(-2.5deg) scale(${(0.6 + 0.4 * k) * overshoot})`;
+        this.lines.style.opacity = String(smooth((s - .95) / .08) * (1 - smooth((s - 1.45) / .5)) * .85);
+        const st = clamp((s - 1.7) / .16);
+        this.stamp.style.opacity = String(Math.min(1, st * 3));
+        this.stamp.style.transform = `translate(-50%,-50%) rotate(-4deg) scale(${2.4 - 1.4 * st})`;
+        scene.style.opacity = String(1 - smooth((s - 7.2) / .8));
+        root.dataset.elapsed = s.toFixed(2);
+        root.dataset.stage = 'manga';
+      }
+    },
+    minimal: {
+      duration: 7000,
+      prepare() {
+        const title = document.createElement('div');
+        title.className = 'min-title';
+        title.textContent = $('.boot-title').textContent;
+        const sub = document.createElement('div');
+        sub.className = 'min-sub';
+        sub.textContent = $('#subtitle').textContent;
+        const track = document.createElement('div');
+        track.className = 'min-track';
+        track.innerHTML = '<div class="min-fill"></div>';
+        scene.append(title, sub, track);
+        this.title = title; this.sub = sub; this.fill = track.firstChild;
+      },
+      render(t) {
+        const s = t / 1000;
+        art.style.opacity = String(.42 * smooth((s - 1) / 2));
+        $('.shade').style.opacity = '.72';
+        this.title.style.opacity = String(smooth((s - 1.2) / .9));
+        this.title.style.letterSpacing = `${.55 - .32 * smooth((s - 1.2) / 1.6)}em`;
+        this.sub.style.opacity = String(smooth((s - 2.4) / .6) * (1 - smooth((s - 5.4) / .8)));
+        this.fill.style.transform = `scaleX(${clamp((s - 1.8) / 4.4)})`;
+        scene.style.opacity = String(1 - smooth((s - 6.3) / .7));
+        root.dataset.elapsed = s.toFixed(2);
+        root.dataset.stage = 'minimal';
+      }
+    }
+  };
   const reduced = !still && motionPreference.matches;
+  // Reduced motion plays the calm card instead of skipping the animation; the
+  // "short" style is the same card with a gentle fade.
+  const skin = !reduced && style !== 'full' && style !== 'short' ? SKINS[style] : null;
+  const card = reduced || style === 'short';
+  const cardDuration = reduced ? 2400 : 3000;
+  if (card) root.dataset.motion = reduced ? 'calm' : 'short';
   let completed = false;
   let frame = 0;
   let origin = 0;
@@ -31,6 +135,7 @@
   }
 
   $('.skip').addEventListener('click', () => finish('complete'));
+  root.addEventListener('click', () => { if (!still) finish('complete'); });
   window.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -40,10 +145,6 @@
   motionPreference.addEventListener('change', event => {
     if (event.matches && !still) finish('complete');
   });
-  if (reduced) {
-    finish('complete');
-    return;
-  }
 
   document.querySelectorAll('.boot-logs div').forEach(line => { if (!line.textContent.trim()) line.remove(); });
   if (!$('#subtitle').textContent.trim()) subtitle.style.display = 'none';
@@ -291,11 +392,34 @@
     }
   }
 
+  // The title card: identity over the artwork, no assembly, particles or HUD.
+  // Calm (reduced motion) appears without a fade-in; short fades in gently.
+  function prepareCard() {
+    intro.style.opacity = '1';
+    const identity = $('.identity');
+    identity.style.opacity = '1';
+    identity.style.transform = 'translate(-50%,-43%)';
+    $('.boot-title').style.clipPath = 'none';
+    $('.boot-caption').style.opacity = '1';
+    $('.wave').style.transform = 'scaleY(1)';
+    art.style.opacity = reduced ? '.28' : '.42';
+    $('.shade').style.opacity = '.72';
+    hud.style.opacity = '1';
+  }
+  function renderCard(t) {
+    const s = t / 1000;
+    const appear = reduced ? Math.min(1, s / .8) : smooth(s / .7);
+    const leave = smooth((s - (cardDuration / 1000 - .55)) / .55);
+    scene.style.opacity = String(appear * (1 - leave));
+    root.dataset.elapsed = s.toFixed(2);
+    root.dataset.stage = 'card';
+  }
   function tick(now) {
     if (completed) return;
-    const elapsed = Math.min(duration, (now - origin) * rate);
-    render(elapsed);
-    if (elapsed >= duration) {
+    const total = card ? cardDuration : skin ? skin.duration : duration;
+    const elapsed = Math.min(total, (now - origin) * rate);
+    if (card) renderCard(elapsed); else if (skin) skin.render(elapsed); else render(elapsed);
+    if (elapsed >= total) {
       finish('complete');
       return;
     }
@@ -311,6 +435,22 @@
     }
     prepareLineColor();
     fitTitle();
+    if (card) {
+      prepareCard();
+      if (still) { renderCard(Math.min(cardDuration, still * 1000)); return; }
+      renderCard(0);
+      origin = performance.now();
+      frame = requestAnimationFrame(tick);
+      return;
+    }
+    if (skin) {
+      skin.prepare();
+      if (still) { skin.render(Math.min(skin.duration, still * 1000)); return; }
+      skin.render(0);
+      origin = performance.now();
+      frame = requestAnimationFrame(tick);
+      return;
+    }
     paths = preparePaths(window.traceWallpaper ? window.traceWallpaper(art) : window.CONTOUR_PATHS || []);
     fragments = prepareFragments(paths);
     // A flat custom image can have no outlines. Its color layer fades in on its own.

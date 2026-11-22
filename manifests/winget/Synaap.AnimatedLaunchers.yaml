@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+# Draft for winget-pkgs submission. Before submitting: update PackageVersion,
+# the InstallerUrl version segments, InstallerSha256 (from the release .sha256),
+# and ReleaseDate. Requires the signed Setup.exe — unsigned installers get
+# pulled by winget validation.
+PackageIdentifier: Synaap.AnimatedLaunchers
+PackageVersion: "3.0.0"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0

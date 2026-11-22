@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+PackageIdentifier: Synaap.AnimatedLaunchers
+PackageVersion: "3.0.0"
+PackageLocale: en-US
+Publisher: Synaap
+PackageName: Animated Launchers
+# The repository has no license yet; set the real one before submitting.
+License: TBD
+ShortDescription: Animated startup launchers and in-window artwork themes for AI tools and editors
+Description: >-
+  Animated Launchers plays a short startup animation when your AI tools and code
+  editors open, and keeps a soft, readable wallpaper inside their windows.
+  Theme Studio edits the shared theme library — wallpapers, looks, animation
+  text and skins — with import, export and a starter pack.
+Moniker: animated-launchers
+Tags:
+  - launcher
+  - wallpaper
+  - animation
+  - themes
+PackageUrl: https://github.com/Synaap/Codex-Animated
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

@@ -11,11 +11,31 @@ internal static class ArtworkUpgrade
 {
     internal static bool TakeOverPreviousHelper(Mutex artworkMutex)
     {
-        if (Acquire(artworkMutex, 0)) return true;
+        // Earlier versions' helpers (DevinAnimated.exe and friends) hold their own
+        // per-app mutexes, so the shared mutex alone never detects them. They are
+        // asked to quit even when the shared mutex is already ours.
+        bool legacy = StopHelpers(false);
+        if (Acquire(artworkMutex, 0))
+        {
+            if (legacy) Thread.Sleep(400); // let the old helpers' windows actually go away
+            return true;
+        }
+        bool requested = StopHelpers(true); // a copy of this helper holds the shared mutex
+        return Acquire(artworkMutex, requested ? 5000 : 0);
+    }
+
+    // Posts WM_QUIT to every --artwork process under the given names; true when one was asked.
+    private static bool StopHelpers(bool withUnified)
+    {
         bool requested = false;
         using (var current = Process.GetCurrentProcess())
         {
-            foreach (var process in Process.GetProcessesByName(AppTarget.HelperName))
+            // The unified helper and every per-app name a previous version ran under.
+            var names = new System.Collections.Generic.List<string>();
+            if (withUnified) names.Add(AppTable.HelperProcessName);
+            foreach (App app in AppTable.All) names.Add(app.HelperName);
+            foreach (string name in names)
+            foreach (var process in Process.GetProcessesByName(name))
             using (process)
             {
                 try
@@ -33,7 +53,7 @@ internal static class ArtworkUpgrade
                 catch (UnauthorizedAccessException) { }
             }
         }
-        return Acquire(artworkMutex, requested ? 5000 : 0);
+        return requested;
     }
 
     private static bool Acquire(Mutex mutex, int milliseconds)

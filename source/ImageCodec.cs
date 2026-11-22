@@ -29,9 +29,24 @@ internal static class ImageCodec
     }
 
     // Any supported picture (JPEG, PNG, BMP) normalized to an upright JPEG.
-    internal static byte[] ToJpeg(string path)
+    internal static byte[] ToJpeg(string path) { return ToJpeg(ReadBytes(path)); }
+
+    // A bitmap (drawn, cropped or generated) encoded as a quality-94 JPEG.
+    internal static byte[] EncodeJpeg(Bitmap image)
     {
-        using (var input = new MemoryStream(ReadBytes(path), false))
+        using (var output = new MemoryStream())
+        using (var options = new EncoderParameters(1))
+        {
+            options.Param[0] = new EncoderParameter(Encoder.Quality, 94L);
+            var codec = Array.Find(ImageCodecInfo.GetImageEncoders(), c => c.FormatID == ImageFormat.Jpeg.Guid);
+            image.Save(output, codec, options);
+            return output.ToArray();
+        }
+    }
+
+    internal static byte[] ToJpeg(byte[] bytes)
+    {
+        using (var input = new MemoryStream(bytes, false))
         using (var normalized = Decode(input, false))
         using (var output = new MemoryStream())
         using (var options = new EncoderParameters(1))

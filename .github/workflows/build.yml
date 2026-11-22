@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # The release step drafts a GitHub release on v* tags.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\source\Build.ps1
+
+      - name: Tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test.ps1
+
+      - name: Package
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Package.ps1 -NoBuild
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Animated-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Upload hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Animated-sha256
+          path: dist/*.sha256
+          if-no-files-found: error
+
+      # Drafts the release when a v* tag is pushed. Sign Setup.exe and the
+      # payloads here once a code-signing certificate exists (secrets needed:
+      # the certificate and its password).
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256
+          draft: true
+          generate_release_notes: true

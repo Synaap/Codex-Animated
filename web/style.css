@@ -286,6 +286,19 @@ body {
   height:100%;
   object-fit:cover;
 }
+/* Frame shapes: the corner-notch brackets only read on the default square. */
+[data-frame=round] .avatar-frame:before,[data-frame=round] .avatar-frame:after,
+[data-frame=circle] .avatar-frame:before,[data-frame=circle] .avatar-frame:after,
+[data-frame=diamond] .avatar-frame:before,[data-frame=diamond] .avatar-frame:after,
+[data-frame=hex] .avatar-frame:before,[data-frame=hex] .avatar-frame:after { display:none; }
+[data-frame=round] .avatar-frame { border-radius:16%; }
+[data-frame=round] .avatar { border-radius:14%; }
+[data-frame=circle] .avatar-frame { border-radius:50%; }
+[data-frame=circle] .avatar { border-radius:50%; }
+[data-frame=diamond] .avatar-frame { clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%); }
+[data-frame=diamond] .avatar { clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%); }
+[data-frame=hex] .avatar-frame { clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
+[data-frame=hex] .avatar { clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
 .reticle {
   position:absolute;
   width:14%;
@@ -340,6 +353,12 @@ body {
   white-space:nowrap;
   text-transform:uppercase;
 }
+[data-font=segoe] .boot-title { font-family:"Segoe UI","Segoe UI Variable Text",sans-serif; }
+[data-font=mono] .boot-title { font-family:Consolas,"Cascadia Mono",monospace; letter-spacing:.12em; padding-left:.12em; }
+[data-font=serif] .boot-title { font-family:Georgia,"Times New Roman",serif; }
+[data-font=gothic] .boot-title { font-family:"Yu Gothic UI","Yu Gothic",Meiryo,"Microsoft YaHei UI",sans-serif; }
+[data-font=type] .boot-title { font-family:"Courier New",Courier,monospace; letter-spacing:.1em; padding-left:.1em; }
+[data-font=impact] .boot-title { font-family:Impact,"Arial Black",sans-serif; font-weight:400; letter-spacing:.14em; padding-left:.14em; }
 .boot-caption {
   font:11px Consolas,monospace;
   letter-spacing:.42em;
@@ -452,4 +471,171 @@ body {
     width:70px;
     height:70px;
   }
+}
+
+/* Title card (short style, or calm when reduced motion is on): only the
+   identity, the artwork and the outer corners stay visible. */
+.window[data-motion] .pulse,
+.window[data-motion] .wave,
+.window[data-motion] .boot-logs,
+.window[data-motion] .line-art,
+.window[data-motion] .scanlines,
+.window[data-motion] .light-sweep,
+.window[data-motion] .particles,
+.window[data-motion] .transition-flash,
+.window[data-motion] .shutter-line,
+.window[data-motion] .boot-grid,
+.window[data-motion] .boot-corners,
+.window[data-motion] .sync,
+.window[data-motion] .subtitle,
+.window[data-motion] .now-showing,
+.window[data-motion] #timecode {
+  display:none;
+}
+
+/* ---------- Alternative animation skins ---------- */
+/* Everything the full skin owns is hidden; each skin shows only what it adds. */
+[data-style=terminal] .intro,
+[data-style=terminal] .hud,
+[data-style=terminal] .boot-logs,
+[data-style=terminal] .line-art,
+[data-style=terminal] .particles,
+[data-style=terminal] .light-sweep,
+[data-style=terminal] .boot-grid,
+[data-style=terminal] .boot-corners,
+[data-style=terminal] .transition-flash,
+[data-style=terminal] .shutter-line,
+[data-style=manga] .intro,
+[data-style=manga] .hud,
+[data-style=manga] .boot-logs,
+[data-style=manga] .line-art,
+[data-style=manga] .particles,
+[data-style=manga] .light-sweep,
+[data-style=manga] .boot-grid,
+[data-style=manga] .boot-corners,
+[data-style=manga] .transition-flash,
+[data-style=manga] .shutter-line,
+[data-style=manga] .scanlines,
+[data-style=minimal] .intro,
+[data-style=minimal] .hud,
+[data-style=minimal] .boot-logs,
+[data-style=minimal] .line-art,
+[data-style=minimal] .particles,
+[data-style=minimal] .light-sweep,
+[data-style=minimal] .boot-grid,
+[data-style=minimal] .boot-corners,
+[data-style=minimal] .transition-flash,
+[data-style=minimal] .shutter-line {
+  display:none;
+}
+
+/* Terminal: typed boot lines over a scan-faded artwork. */
+.term {
+  position:absolute;
+  top:15%;
+  left:50%;
+  transform:translateX(-50%);
+  width:min(760px,86%);
+  margin:0;
+  font:15px/1.9 Consolas,"Cascadia Mono",monospace;
+  color:color-mix(in srgb,var(--accent) 42%,#d6d0dc);
+  text-shadow:0 0 9px color-mix(in srgb,var(--accent) 22%,transparent);
+}
+.term .tl { min-height:1.9em; }
+.term .tl:last-of-type { color:#e8e4ee; }
+.term .tbar { margin-top:1.4em; color:var(--accent-strong); }
+.term .tready { color:#8fe0a8; }
+.term .cursor {
+  display:inline-block;
+  width:.62em;
+  height:1.1em;
+  margin-left:.2em;
+  vertical-align:-0.18em;
+  background:var(--accent);
+  animation:term-blink 1s steps(1) infinite;
+}
+@keyframes term-blink { 50% { opacity:0; } }
+[data-still] .term .cursor { animation:none; opacity:1; }
+
+/* Manga: a tilted panel slam, speed lines, halftone, stamped title on paper. */
+[data-style=manga] .scene { background:#efe9da; }
+.manga-panel {
+  position:absolute;
+  top:44%;
+  left:50%;
+  width:min(640px,58%);
+  aspect-ratio:8/5;
+  transform:translate(-50%,-50%) rotate(-2.5deg);
+  border:6px solid #171210;
+  background:#000;
+  box-shadow:12px 14px 0 rgba(23,18,16,.28);
+  overflow:hidden;
+}
+.manga-panel .artwork { position:absolute; inset:0; width:100%; height:100%; }
+.halftone {
+  position:absolute;
+  inset:0;
+  background:repeating-radial-gradient(circle at 32% 30%, rgba(23,18,16,.20) 0 1.5px, transparent 1.5px 5.5px);
+  mix-blend-mode:multiply;
+  pointer-events:none;
+}
+.speedlines {
+  position:absolute;
+  inset:-20%;
+  background:repeating-conic-gradient(from 0deg at 50% 46%, transparent 0 2.4deg, rgba(23,18,16,.55) 2.4deg 2.9deg);
+  opacity:0;
+  pointer-events:none;
+}
+.manga-title {
+  position:absolute;
+  top:80%;
+  left:50%;
+  transform:translate(-50%,-50%) rotate(-4deg);
+  font:800 clamp(40px,6.5vw,84px) Georgia,"Times New Roman",serif;
+  letter-spacing:.02em;
+  color:#171210;
+  text-shadow:3px 3px 0 #fff,-2px -2px 0 #fff,2px -2px 0 #fff,-2px 2px 0 #fff,0 0 18px rgba(255,255,255,.7);
+  white-space:nowrap;
+  opacity:0;
+}
+
+/* Minimal: artwork low, hairline progress, one line of type. */
+.min-title {
+  position:absolute;
+  top:44%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  font:300 clamp(26px,4.2vw,52px) "Segoe UI","Segoe UI Variable Text",sans-serif;
+  letter-spacing:.55em;
+  padding-left:.55em;
+  color:#e6e2ec;
+  white-space:nowrap;
+  opacity:0;
+}
+.min-sub {
+  position:absolute;
+  top:54%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  font:12px Consolas,monospace;
+  letter-spacing:.3em;
+  padding-left:.3em;
+  color:color-mix(in srgb,var(--accent) 60%,#9a93a4);
+  white-space:nowrap;
+  opacity:0;
+}
+.min-track {
+  position:absolute;
+  top:62%;
+  left:50%;
+  transform:translateX(-50%);
+  width:min(360px,44%);
+  height:1px;
+  background:rgba(230,226,236,.16);
+}
+.min-fill {
+  height:100%;
+  background:var(--accent);
+  transform:scaleX(0);
+  transform-origin:0 50%;
 }

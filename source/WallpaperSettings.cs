@@ -11,10 +11,6 @@ internal sealed class WallpaperSettings
     private readonly string customPath;
     private readonly string avatarPath;
 
-    internal WallpaperSettings() : this(
-        LauncherTheme.DefaultWallpaperPath,
-        AppTarget.SettingsDirectory) { }
-
     internal WallpaperSettings(string bundledPath, string settingsDirectory)
     {
         this.bundledPath = bundledPath;

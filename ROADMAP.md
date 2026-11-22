@@ -1,64 +1,118 @@
 # Roadmap
 
-What is planned for Animated Launchers after v2.1.0. There are no dates. Updates ship in roughly this order, each when it is ready and tested. This is a plan, not a promise: the order can change, and items marked "experiment" ship only if a trial shows they work well.
+What is planned for Animated Launchers. There are no dates. This is a plan, not a promise: the order can change, and items marked "experiment" ship only if a trial shows they work well.
 
-## Next updates
+## Finished, coming in 3.0.0
 
-### 1. Safety net (2.1.1)
+Updates 1 to 18 are done on `main` and ship together in the next release. [CHANGELOG.md](CHANGELOG.md) lists them in release-note form.
+
+### 1. Safety net
 - A small log file for each helper, and a helper that restarts itself after a crash
 - The uninstaller stays on the PC and the project appears in Windows "Installed apps"
 - No startup animation while a full-screen game or a presentation is in front
 - Test and release scripts in the repository
 
-### 2. Themes to go (2.2)
+### 2. Themes to go
 - Export a theme as one file and import it again, by button or by dropping it on Theme Studio
 - Back up and restore the whole theme library
 - Duplicate a theme, or drop any image on Theme Studio to make one
 - A credit line per theme for the artist or source
 
-### 3. One helper (3.0)
+### 3. One helper
 - One helper program and one notification-area icon for all apps, instead of one per app
 - Apps described in one table, so adding an app no longer needs a new program
 - Existing shortcuts, pins, settings and themes keep working
 - Only one startup animation at a time
 
-### 4. Editors (3.1)
+### 4. Editors
 - VS Code, Cursor and Kiro
 - An apps page in Theme Studio: every known app, whether it was found, and a switch for its wallpaper
 - A table of supported apps in the README: tested, reported working, untested
 
-### 5. Sharper looks (3.2)
-- Clear zone (experiment): fade the artwork out where the text is, so the picture stays sharp
+### 5. Sharper looks
+- Clear zone: fade the artwork out where the text is, so the picture stays sharp
 - Saturation and vignette controls
 - Fit modes (fill, fit, center) and crisp scaling for pixel art
-- Looks for light-colored apps (experiment)
+- Looks for light-colored apps
 - Your own presets
 
-### 6. Animation styles (3.3)
+### 6. Animation styles
 - A short style: a title card of about three seconds
 - A calm version when Windows asks for reduced motion
 - A third speed, and click anywhere to skip
 - Play only on the first start after signing in (option)
 
-## After that
+### 7. Chat and notes apps
+- Obsidian
+- Add your own app: pick a program and Theme Studio checks whether its window can take a wallpaper, including apps with frameless windows
 
-- **Chat and notes apps:** Obsidian, and Discord (under review); add your own app with a compatibility check
-- **Faster theme making:** crop the avatar from the wallpaper, use the desktop wallpaper, paste an image, add a folder of images, gradient themes without an image
-- **Theme Studio comfort:** undo, reset, hold to compare, keyboard shortcuts, search and favorites
-- **Status and updates:** per-app status, a report to copy into bug reports, a "check for updates" button that contacts GitHub only when clicked
-- **Variety:** theme rotation, favorites, a hotkey to hide the artwork, follow Windows light and dark mode
-- **Day and night:** a theme per time of day, night dim, extra dim per app, hide while presenting
-- **Every window:** artwork on all windows of an app at once, not only the focused one
-- **Animation details:** title fonts, avatar frame shapes, your own boot lines with variables
-- **New animation skins**
-- **Starter themes** made from generated gradients and public-domain art
-- **Reach:** screenshots and a clip in the README, automatic builds, signed programs, winget, translations
+### 8. Faster theme making
+- Crop the avatar from the wallpaper by dragging a square
+- Use the desktop wallpaper, paste an image from the clipboard, add a whole folder of images
+- Gradient themes that need no image
+- Double-click a theme file to import it into an already open Theme Studio
+
+### 9. Theme Studio comfort
+- Undo, redo and a reset back to how the theme was when you opened it
+- Double-click a slider to reset it; click its number to type an exact value
+- Hold to compare with the untouched picture
+- Keyboard shortcuts and a built-in list of them
+- Search, sorting and favorites in the theme list, remembered between sessions
+
+### 10. Status and updates
+- Per-app status on the apps page — wallpaper attached, watching, off or parked, plus the last problem
+- A hint when a wallpaper stays bright where app text sits
+- A Settings page: version, "copy report" for bug reports, open the logs folder, restart helpers
+- "Check for updates" that contacts GitHub only when clicked, with one-click download and install
+
+### 11. Variety
+- Rotate themes on app start or on a timer, never while the app is in the foreground
+- Rotation through starred themes only, or the whole library
+- Win+Alt+H hides or shows the artwork in every app at once
+- More/less visible from the tray; Next theme from the tray
+- Follow Windows light and dark mode with a second theme pick per app
+
+### 12. Day and night
+- A night theme per app with its own hours, next to the light and dark picks
+- Night dim and a per-app extra dim that darken the artwork without touching the theme
+- Artwork hides itself while the app is full screen or Windows reports presentation mode
+
+### 13. Every window
+- The wallpaper appears on every window an app opens, not only the focused one — up to eight windows per app
+- Windows opened later are picked up automatically, and closing one keeps the rest
+- Full-screen hiding is per window now: only the full-screen window loses its artwork
+
+### 14. Animation details
+- Six extra title fonts from fonts Windows already has (Segoe UI, console, serif, gothic, typewriter, Impact)
+- Four new avatar frame shapes: rounded, circle, diamond, hexagon
+- Boot lines can use variables — {app}, {theme}, {user}, {date}, {time}, {starts} — and a random line from your own list shows each play
+
+### 15. Animation skins
+- Three more animation looks join Full and the short Card: **Terminal** (typed boot lines, ASCII progress bar), **Manga** (tilted panel slam with speed lines and halftone) and **Minimal** (quiet artwork, hairline progress, one line of type)
+- A theme picks its skin in Theme Studio; apps can keep a skin as their own default too
+
+### 16. Starter themes
+- Six ready-made themes painted in code — no stock photos, no licenses to track: Aurora fields, Paper dusk, Night garden, Sakura rain, plus the Deep sea and Sunset gradients
+- An empty library shows a welcome card with previews and one click adds them all
+
+### 17. Launch prep
+- `Setup.exe` joins the zip — a single-file installer you just double-click (the plain scripts still work too)
+- Screenshots in the README, a build workflow ready for GitHub Actions, and winget manifest drafts ready for submission
+- Still parked: signing the programs (needs a certificate) and turning the pipeline on
+
+### 18. Translations
+- Theme Studio speaks French — every label, button, status line and hint, with English as the automatic fallback
+- A Language select in Settings switches instantly (Same as Windows / English / Français); more languages slot into the same table
+
+## Next
+
+- **Discord** (under review — its terms may not allow it)
+- **Reach:** signed programs, winget submission, more languages on the same table
 
 ## Experiments
 
 Small trials that decide whether an idea is worth building:
 
-- Per-pixel transparency inside the app window (needed for the clear zone)
 - Apps built on other technology, for example Spotify, Steam, Telegram and browsers
 - Moving wallpapers (GIF or short video), only if they stay light on the processor
 - A slight shift of the artwork with the mouse

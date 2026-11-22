@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: Synaap.AnimatedLaunchers
+PackageVersion: "3.0.0"
+InstallerType: zip
+NestedInstallerType: exe
+NestedInstallerFiles:
+  - RelativeFilePath: Setup.exe
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+InstallerSwitches:
+  Silent: /silent
+  SilentWithProgress: /silent
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Synaap/Codex-Animated/releases/download/v3.0.0/Codex-Animated-v3.0.0-windows-x64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    # InstallerSha256 comes from the release's .sha256 file at submission time.
+ManifestType: installer
+ManifestVersion: 1.9.0

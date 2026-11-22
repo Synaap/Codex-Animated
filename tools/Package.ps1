@@ -16,7 +16,21 @@ if (-not $Version) {
 }
 if (-not $NoBuild) { & (Join-Path $package 'source\Build.ps1') }
 
-$entries = 'DevinAnimated.exe', 'AntigravityAnimated.exe', 'CodexAnimated.exe', 'ClaudeAnimated.exe', 'ThemeStudio.exe',
+# Setup.exe is the single-file installer: the payload rides inside as resources,
+# extracts to %TEMP% and runs Install.ps1. Compiled here so it always ships the
+# same build as the loose exes in this zip.
+$payload = 'AnimatedLauncher.exe', 'ThemeStudio.exe', 'Install.ps1', 'Install.cmd', 'Uninstall.ps1', 'Uninstall.cmd'
+foreach ($file in $payload) {
+    if (-not (Test-Path -LiteralPath (Join-Path $package $file))) { throw "$file is missing. Run without -NoBuild." }
+}
+$compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+$resources = foreach ($file in $payload) { '/resource:{0},payload/{1}' -f (Join-Path $package $file), $file }
+$setupOut = '/out:{0}' -f (Join-Path $package 'Setup.exe')
+$setupSrc = Join-Path $package 'tools\Setup.cs'
+& $compiler /nologo /target:exe /optimize+ /platform:x64 $setupOut /r:System.dll $setupSrc @resources
+if ($LASTEXITCODE -ne 0) { throw "The Setup.exe build failed with exit code $LASTEXITCODE." }
+
+$entries = 'AnimatedLauncher.exe', 'ThemeStudio.exe', 'Setup.exe',
     'Install.cmd', 'Install.ps1', 'Uninstall.cmd', 'Uninstall.ps1', 'README.md',
     'notices/LICENSE.txt', 'notices/NOTICE.txt'
 foreach ($entry in $entries) {

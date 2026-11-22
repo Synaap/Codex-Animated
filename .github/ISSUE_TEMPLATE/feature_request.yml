@@ -1,0 +1,19 @@
+name: Idea or request
+description: Suggest a feature, a new app or a theme idea.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: Which app would you use it with?
+  - type: textarea
+    id: why
+    attributes:
+      label: Why does it matter to you?
+      description: The situation it helps with, or what you do today instead.

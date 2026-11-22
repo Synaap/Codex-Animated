@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -19,7 +20,8 @@ internal sealed class SplashContent
         "MAGI SYSTEM \u00B7 CASPER / MELCHIOR / BALTHASAR", "loading renderer surface ........ ok",
         "entry plug depth 21.6 ........... ok", "LCL pressure nominal" };
 
-    internal string Title = "", Subtitle = "", Accent = DefaultAccent, Theme = "", Label = "", Caption = "";
+    internal string Title = "", Subtitle = "", Accent = DefaultAccent, Theme = "", Label = "", Caption = "", Style = "full";
+    internal string Font = "", Frame = "";
     internal string[] Logs = { "", "", "", "" };
     internal int Rate = 1;
 
@@ -39,10 +41,16 @@ internal sealed class SplashContent
         content.Subtitle = original ? UpstreamSubtitle : text.Subtitle;
         content.Accent = text.Accent.Length > 0 ? text.Accent : DefaultAccent;
         content.Theme = isTheme ? Path.GetFileName(folder.TrimEnd('\\', '/')) : (ini.Get("theme") ?? "").Trim();
-        content.Rate = !isTheme && (ini.Get("speed") ?? "").Trim() == "2" ? 2 : 1;
+        content.Rate = isTheme ? 1 : Look.Number(ini, "speed", 1, 1, 3);
+        // A library theme carries its own choice ("" = the app's default); an app
+        // folder already holds the resolved style under the same key.
+        string style = SplashText.NormalizeStyle(ini.Get("style"));
+        content.Style = style.Length > 0 ? style : "full";
         content.Caption = upper + (original ? " INITIALIZE / TYPE-0" : " INITIALIZE");
         content.Label = original ? UpstreamLabel : content.Theme.Length > 0 ? content.Theme : appName;
-        string[] lines = original ? UpstreamLogs : text.Logs;
+        content.Font = text.Font;
+        content.Frame = text.Frame;
+        string[] lines = original ? UpstreamLogs : PickLines(text.Logs, text.Lines);
         if (lines.Length == 0)
             lines = new[] {
                 appName + " launcher ready",
@@ -51,8 +59,41 @@ internal sealed class SplashContent
                     artwork.Height.ToString(CultureInfo.InvariantCulture),
                 "opening " + appName
             };
-        for (int i = 0; i < 4; i++) content.Logs[i] = i < lines.Length ? "> " + lines[i] : "";
+        int starts = isTheme ? 0 : SplashMemory.Plays(folder);
+        for (int i = 0; i < 4; i++)
+            content.Logs[i] = i < lines.Length ? "> " + ExpandVars(lines[i], appName, content.Theme, starts) : "";
         return content;
+    }
+
+    // Fixed boot lines keep slots 1-3; one random pick from the "lines" pool is
+    // slot 4 when the pool exists (a fourth fixed line gives way to it).
+    private static string[] PickLines(string[] fixedLines, string[] pool)
+    {
+        if (pool == null || pool.Length == 0) return fixedLines ?? new string[0];
+        int keep = Math.Min(fixedLines == null ? 0 : fixedLines.Length, 3);
+        var lines = new List<string>();
+        for (int i = 0; i < keep; i++) lines.Add(fixedLines[i]);
+        lines.Add(pool[new Random().Next(pool.Length)]);
+        return lines.ToArray();
+    }
+
+    // {app} {theme} {user} {date} {time} {starts} inside a boot line. Unknown
+    // tokens pass through; the expanded line is limited like a hand-typed one.
+    internal static string ExpandVars(string line, string appName, string theme, int starts)
+    {
+        string expanded = Regex.Replace(line ?? "", @"\{(app|theme|user|date|time|starts)\}",
+            delegate(Match match) {
+                switch (match.Groups[1].Value.ToLowerInvariant())
+                {
+                    case "app": return appName;
+                    case "theme": return theme.Length > 0 ? theme : appName;
+                    case "user": return Environment.UserName;
+                    case "date": return DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    case "time": return DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture);
+                    default: return starts.ToString(CultureInfo.InvariantCulture);
+                }
+            }, RegexOptions.IgnoreCase);
+        return expanded.Length > 80 ? expanded.Substring(0, 80) : expanded;
     }
 }
 
@@ -66,8 +107,9 @@ internal static class SplashPage
         var values = new System.Collections.Generic.Dictionary<string, string>
         {
             { "APP", appName.ToUpperInvariant() }, { "TITLE", content.Title }, { "SUBTITLE", content.Subtitle },
-            { "THEME", content.Theme }, { "CAPTION", content.Caption }, { "LABEL", content.Label }, { "ACCENT", accent }, { "RATE", content.Rate == 2 ? "2" : "1" },
-            { "LOG1", content.Logs[0] }, { "LOG2", content.Logs[1] }, { "LOG3", content.Logs[2] }, { "LOG4", content.Logs[3] }
+            { "THEME", content.Theme }, { "CAPTION", content.Caption }, { "LABEL", content.Label }, { "ACCENT", accent }, { "RATE", Math.Max(1, Math.Min(3, content.Rate)).ToString(CultureInfo.InvariantCulture) }, { "STYLE", SplashText.NormalizeStyle(content.Style).Length > 0 ? content.Style : "full" },
+            { "LOG1", content.Logs[0] }, { "LOG2", content.Logs[1] }, { "LOG3", content.Logs[2] }, { "LOG4", content.Logs[3] },
+            { "FONT", content.Font }, { "FRAME", content.Frame }
         };
         // One pass, so text that looks like a token is never substituted again.
         string html = Regex.Replace(Encoding.UTF8.GetString(template), @"\{\{([A-Z0-9]+)\}\}", delegate(Match match) {

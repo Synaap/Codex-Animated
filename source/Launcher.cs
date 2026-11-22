@@ -13,25 +13,11 @@ using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-#if APP_DEVIN
-[assembly: AssemblyTitle("Devin Animated")]
-[assembly: AssemblyProduct("Devin Animated")]
-[assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Devin")]
-#elif APP_ANTIGRAVITY
-[assembly: AssemblyTitle("Antigravity Animated")]
-[assembly: AssemblyProduct("Antigravity Animated")]
-[assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Antigravity")]
-#elif APP_CLAUDE
-[assembly: AssemblyTitle("Claude Animated")]
-[assembly: AssemblyProduct("Claude Animated")]
-[assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Claude")]
-#elif APP_CODEX
-[assembly: AssemblyTitle("Codex Animated")]
-[assembly: AssemblyProduct("Codex Animated")]
-[assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Codex")]
-#endif
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyTitle("Animated Launchers")]
+[assembly: AssemblyProduct("Animated Launchers")]
+[assembly: AssemblyDescription("Windows launcher with the startup animation and wallpaper for Devin, Antigravity, Codex and Claude")]
+[assembly: AssemblyVersion("3.0.0.0")]
+[assembly: AssemblyFileVersion("3.0.0.0")]
 
 internal static class Launcher
 {
@@ -41,38 +27,82 @@ internal static class Launcher
     [DllImport("user32.dll")]
     private static extern bool SetProcessDpiAwarenessContext(IntPtr context);
 
-    // none: open the app, then play the animation on top. --artwork: the wallpaper helper.
-    // --preview [folder [hwnd]]: play with the app's settings or a library theme, then exit;
-    // with a window handle, centred on the monitor of that window.
-    // --splash <hwnd>: play centred on the monitor of that window (started by the helper).
+    // none: open the app, then play the animation on top. --artwork: the shared
+    // wallpaper helper for every app. --preview [folder [hwnd]]: play with the app's
+    // settings or a library theme, then exit; with a window handle, centred on that
+    // window's monitor. --splash <hwnd>: the same, started by the helper.
+    // --app <id> names the app when the exe file name does not (AnimatedLauncher.exe).
+    // A copy named <App>Animated.exe is that app's launcher without --app.
     internal static int Run(string[] args)
     {
         Environment.SetEnvironmentVariable("ELECTRON_RUN_AS_NODE", null);
-        bool launch = args.Length == 0;
-        bool artwork = args.Length == 1 && args[0] == "--artwork";
-        bool preview = args.Length >= 1 && args.Length <= 3 && args[0] == "--preview";
-        bool splash = args.Length == 2 && args[0] == "--splash";
-        string folder = AppTarget.SettingsDirectory;
+        App app = AppTable.ByExeName(Path.GetFileName(Application.ExecutablePath));
+        bool artwork = false, preview = false, splash = false;
+        string folder = null;
         IntPtr anchor = IntPtr.Zero;
-        if (preview && args.Length >= 2)
+        bool anchorGiven = false;
+        for (int i = 0; i < args.Length; i++)
         {
-            folder = args[1];
-            if (!Directory.Exists(folder)) return 64;
-        }
-        if (splash || (preview && args.Length == 3))
-        {
-            long handle;
-            if (!long.TryParse(args[args.Length - 1], NumberStyles.None, CultureInfo.InvariantCulture, out handle)) return 64;
-            anchor = new IntPtr(handle);
-        }
-        if (!launch && !artwork && !preview && !splash) return 64;
-        bool first;
-        using (var mutex = new Mutex(true, @"Local\" + AppTarget.HelperName + "Splash." + (artwork ? "Artwork" : "Play"), out first))
-        {
-            if (!first)
+            string arg = args[i];
+            if (arg == "--artwork") artwork = true;
+            else if (arg == "--preview") preview = true;
+            else if (arg == "--splash")
             {
-                if (artwork) { if (!ArtworkUpgrade.TakeOverPreviousHelper(mutex)) return 0; }
-                else if (!launch) return 5;
+                long handle;
+                splash = true;
+                if (++i >= args.Length ||
+                    !long.TryParse(args[i], NumberStyles.None, CultureInfo.InvariantCulture, out handle)) return 64;
+                anchor = new IntPtr(handle);
+                anchorGiven = true;
+            }
+            else if (arg == "--app")
+            {
+                if (++i >= args.Length || (app = AppTable.ById(args[i])) == null) return 64;
+            }
+            else if (preview && !arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                if (folder == null)
+                {
+                    folder = arg;
+                    if (!Directory.Exists(folder)) return 64;
+                }
+                else if (!anchorGiven)
+                {
+                    long handle;
+                    if (!long.TryParse(arg, NumberStyles.None, CultureInfo.InvariantCulture, out handle)) return 64;
+                    anchor = new IntPtr(handle);
+                    anchorGiven = true;
+                }
+                else return 64;
+            }
+            else return 64;
+        }
+        bool launch = !artwork && !preview && !splash;
+        if ((artwork ? 1 : 0) + (preview ? 1 : 0) + (splash ? 1 : 0) > 1) return 64;
+        if (app == null && !artwork) return 64; // a neutral exe needs --app for app modes.
+        AppLog.Write("start", (app != null ? app.Product : "Animated Launchers") + " " +
+            typeof(Launcher).Assembly.GetName().Version.ToString(3) + " " +
+            (artwork ? "helper" : launch ? "launcher" : splash ? "animation" : "preview"));
+        CrashGuard.Install(artwork);
+        bool first;
+        // One helper and one animation at a time, across all apps.
+        using (var mutex = new Mutex(true, artwork ? AppTable.ArtworkMutex : AppTable.PlayMutex, out first))
+        {
+            if (artwork)
+            {
+                // Runs even when the shared mutex is already ours: helpers of older
+                // versions hold their own per-app mutexes and must still hand over.
+                if (!ArtworkUpgrade.TakeOverPreviousHelper(mutex))
+                {
+                    AppLog.Write("helper", "another helper is already running and did not hand over; exiting");
+                    return 0;
+                }
+                if (!first) AppLog.Write("helper", "took over from a previous helper");
+            }
+            else if (!first && !launch)
+            {
+                AppLog.Write("animation", "not played: an animation is already playing");
+                return 5;
             }
             int result = 3;
             string failure = null;
@@ -87,75 +117,109 @@ internal static class Launcher
                 Application.SetCompatibleTextRenderingDefault(false);
                 if (artwork)
                 {
-                    ArtworkOverlay.Run();
+                    HelperHost.Run();
+                    AppLog.Write("helper", "stopped");
+                    AppLog.Flush();
                     return 0;
                 }
-                if (launch) return OpenAndPlay(first);
-                result = Play(folder, anchor, !splash, out failure);
+                if (launch) return OpenAndPlay(app, first);
+                if (splash) SplashMemory.CountPlay(app.SettingsDirectory);
+                result = Play(app, folder ?? app.SettingsDirectory, anchor, !splash, out failure);
             }
-            catch (Exception error) { failure = error.GetBaseException().Message; Console.Error.WriteLine(error); }
-            if (artwork && failure != null)
-                MessageBox.Show("The " + AppTarget.Name + " wallpaper helper could not start.\n\n" + failure,
-                    AppTarget.Product, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            catch (Exception error)
+            {
+                if (artwork)
+                {
+                    CrashGuard.Report(error, "startup");
+                    return CrashGuard.ExitCode;
+                }
+                failure = error.GetBaseException().Message;
+                AppLog.Write("animation", "failed: " + error);
+            }
+            AppLog.Flush();
             return result;
         }
     }
 
-    private static int OpenAndPlay(bool first)
+    private static int OpenAndPlay(App app, bool first)
     {
-        bool wasOpen = AppTarget.FindMainWindow() != IntPtr.Zero;
+        bool wasOpen = app.FindMainWindow() != IntPtr.Zero;
         StartHelperIfMissing();
+        AppLog.Write("launcher", "opening " + app.Name);
         try
         {
-            AppTarget.Launch();
+            app.Launch();
         }
         catch (Exception error)
         {
-            MessageBox.Show("Windows could not open " + AppTarget.Name + ".\n\n" + error.Message,
-                AppTarget.Product, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            AppLog.Write("launcher", "Windows could not open " + app.Name + ": " + error.Message);
+            MessageBox.Show("Windows could not open " + app.Name + ".\n\n" + error.Message,
+                app.Product, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
-        if (!first || wasOpen || !AppProfile.Load(AppTarget.SettingsDirectory).SplashOnStart) return 0;
+        AppProfile profile = AppProfile.Load(app.SettingsDirectory);
+        string skip = wasOpen ? app.Name + " was already open"
+            : !first ? "another animation is already playing"
+            : !profile.SplashOnStart ? "turned off for " + app.Name
+            : QuietTime.Check(app.OwnsProcess);
+        if (skip == null && profile.SplashOnce && SplashMemory.PlayedOrMark(app.SettingsDirectory))
+            skip = "it already played since sign-in";
+        if (skip != null)
+        {
+            AppLog.Write("animation", "not played: " + skip);
+            return 0;
+        }
+        SplashMemory.CountPlay(app.SettingsDirectory);
         string failure = null;
-        try { Play(AppTarget.SettingsDirectory, IntPtr.Zero, false, out failure); }
-        catch (Exception error) { failure = error.GetBaseException().Message; Console.Error.WriteLine(error); }
+        try { Play(app, app.SettingsDirectory, IntPtr.Zero, false, out failure); }
+        catch (Exception error)
+        {
+            failure = error.GetBaseException().Message;
+            AppLog.Write("animation", "failed: " + error);
+        }
         if (failure != null)
             MessageBox.Show("The startup animation could not play.\n\n" + failure +
                 "\n\nCheck that the Microsoft Edge WebView2 Runtime is installed and run the full Windows download again.",
-                AppTarget.Product, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                app.Product, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         return 0;
     }
 
+    // The shared helper is the AnimatedLauncher.exe copy next to this one when it
+    // exists; a lone renamed copy can still run --artwork itself.
     private static void StartHelperIfMissing()
     {
         Mutex running;
-        if (Mutex.TryOpenExisting(@"Local\" + AppTarget.HelperName + "Splash.Artwork", out running))
+        if (Mutex.TryOpenExisting(AppTable.ArtworkMutex, out running))
         {
             running.Dispose();
             return;
         }
         try
         {
-            using (var child = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--artwork")
+            using (var child = Process.Start(new ProcessStartInfo(AppSession.HelperExe(), "--artwork")
             {
                 UseShellExecute = false
             })) { }
+            AppLog.Write("launcher", "started the wallpaper helper");
         }
         catch (Exception error)
         {
-            Console.Error.WriteLine("Windows could not start the wallpaper helper. " + error.Message);
+            AppLog.Write("launcher", "could not start the wallpaper helper: " + error.Message);
         }
     }
 
     // Keep animation dependencies out of the normal activation fallback's JIT path.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static int Play(string folder, IntPtr anchor, bool activate, out string failure)
+    private static int Play(App app, string folder, IntPtr anchor, bool activate, out string failure)
     {
         CoreWebView2Environment.SetLoaderDllFolderPath(PortableStartup.BundleDirectory);
-        using (var splash = new Splash(folder, anchor, activate))
+        using (var splash = new Splash(app, folder, anchor, activate))
         {
             Application.Run(splash);
             failure = splash.Failure;
+            AppLog.Write("animation", splash.Result == 0 ? "played to the end"
+                : splash.Failure == null ? "closed early"
+                : "failed (result " + splash.Result + "): " + splash.Failure);
             return splash.Result;
         }
     }
@@ -177,16 +241,16 @@ internal sealed class LauncherTheme
 
     // The wallpaper, avatar and text come from the given folder: an app's settings
     // folder or a library theme.
-    internal Dictionary<string, byte[]> ReadFiles(string contentFolder)
+    internal Dictionary<string, byte[]> ReadFiles(string contentFolder, App app)
     {
         var settings = new WallpaperSettings(WallpaperPath, contentFolder);
         byte[] wallpaper = settings.LoadJpeg();
         Size artwork;
         using (var decoded = ImageCodec.DecodeJpeg(wallpaper)) artwork = decoded.Size;
-        SplashContent content = SplashContent.Load(contentFolder, AppTarget.Name, artwork);
+        SplashContent content = SplashContent.Load(contentFolder, app.Name, artwork);
         return new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
-            { "index.html", SplashPage.RenderIndex(Read("index.html"), content, AppTarget.Name) },
+            { "index.html", SplashPage.RenderIndex(Read("index.html"), content, app.Name) },
             { "style.css", Read("style.css") },
             { "animation.js", Read("animation.js") },
             { "assets/artwork.jpg", wallpaper },
@@ -221,18 +285,20 @@ internal sealed class Splash : Form
     private readonly System.Windows.Forms.Timer watchdog = new System.Windows.Forms.Timer();
     private readonly System.Windows.Forms.Timer escape = new System.Windows.Forms.Timer();
     private readonly WebView2 browser;
+    private readonly App app;
     private readonly string contentFolder;
     private readonly bool activate;
     private bool finished;
     internal int Result { get; private set; }
     internal string Failure { get; private set; }
 
-    internal Splash(string contentFolder, IntPtr anchor, bool activate)
+    internal Splash(App app, string contentFolder, IntPtr anchor, bool activate)
     {
+        this.app = app;
         this.contentFolder = contentFolder;
         this.activate = activate;
         Result = 4;
-        Text = AppTarget.Product;
+        Text = app.Product;
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Color.FromArgb(8, 6, 13);
         FormBorderStyle = FormBorderStyle.None;
@@ -275,7 +341,7 @@ internal sealed class Splash : Form
         IntPtr foreground = GetForegroundWindow();
         uint pid;
         if (foreground == IntPtr.Zero || GetWindowThreadProcessId(foreground, out pid) == 0) return false;
-        return pid == OwnProcessId || AppTarget.OwnsProcess(pid);
+        return pid == OwnProcessId || app.OwnsProcess(pid);
     }
 
     private void SkipOnEscape(object sender, KeyEventArgs args)
@@ -292,8 +358,8 @@ internal sealed class Splash : Form
         string stage = "loading animation assets";
         try
         {
-            var files = LauncherTheme.Current.ReadFiles(contentFolder);
-            string profile = Path.Combine(AppTarget.SettingsDirectory, "WebView2");
+            var files = LauncherTheme.Current.ReadFiles(contentFolder, app);
+            string profile = Path.Combine(app.SettingsDirectory, "WebView2");
             var options = new CoreWebView2EnvironmentOptions();
             options.AdditionalBrowserArguments = "--disable-background-networking --disable-sync";
             stage = "creating the WebView2 environment";
@@ -367,7 +433,6 @@ internal sealed class Splash : Form
     {
         if (finished || IsDisposed) return;
         Failure = message;
-        Console.Error.WriteLine(message);
         Finish(result);
     }
 

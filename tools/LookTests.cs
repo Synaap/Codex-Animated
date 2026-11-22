@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 
 internal static class LookTests
 {
@@ -19,6 +22,14 @@ internal static class LookTests
             return 0;
         }
         if (args.Length == 1 && args[0] == "--sheets") return Sheets();
+        if (args.Length == 4 && args[0] == "--log-append")
+        {
+            AppLog.Start(args[1], args[2]);
+            int count = int.Parse(args[3]);
+            for (int i = 0; i < count; i++) AppLog.Write("multi", args[2] + " " + i);
+            AppLog.Flush();
+            return 0;
+        }
         if (args.Length == 4 && args[0] == "--render-splash") return RenderSplash(args[1], args[2], args[3]);
         if (args.Length == 3 && args[0] == "--codepoints")
         {
@@ -45,8 +56,27 @@ internal static class LookTests
         SplashPageCase();
         LibraryOperations();
         NameValidation();
+        LogCases();
+        QuietCases();
+        CrashPolicyCases();
+        PackCases();
+        AppTableCases();
+        CustomAppCases();
+        AlphaMaskCases();
+        SharperLookCases();
+        AnimationStyleCases();
+        GradientCases();
+        TextZoneCases();
+        VarietyCases();
+        NightCases();
+        SlotReferenceCases();
+        DetailCases();
+        StarterCases();
         Console.WriteLine();
         Console.WriteLine(failures == 0 ? "ALL " + total + " CHECKS PASSED" : failures + " of " + total + " CHECKS FAILED");
+        try { if (Directory.Exists(RunRoot)) Directory.Delete(RunRoot, true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
         return failures == 0 ? 0 : 1;
     }
 
@@ -57,9 +87,13 @@ internal static class LookTests
         Console.WriteLine((ok ? "PASS " : "FAIL ") + name + (string.IsNullOrEmpty(detail) ? "" : "  [" + detail + "]"));
     }
 
+    // One scratch root per run, removed when the run ends.
+    private static readonly string RunRoot = Path.Combine(Path.GetTempPath(), "LookTests-" + Guid.NewGuid().ToString("N"));
+    private static int tempCount;
+
     private static string Temp(string name)
     {
-        string folder = Path.Combine(Path.GetTempPath(), "LookTests-" + Guid.NewGuid().ToString("N"), name);
+        string folder = Path.Combine(RunRoot, name + "-" + (++tempCount).ToString(System.Globalization.CultureInfo.InvariantCulture));
         Directory.CreateDirectory(folder);
         return folder;
     }
@@ -111,6 +145,547 @@ internal static class LookTests
         Look again = Look.Read(file);
         Check("look: write/read round trip", again.Opacity == 22 && again.Blur == 7 && again.Dim == 9 && again.Tint == 61 &&
             again.FocusX == 3 && again.FocusY == 97 && again.TintColor.ToArgb() == round.TintColor.ToArgb() && again.SameRender(round), null);
+        var zone = new Look { Clear = 60, ClearSide = "left", Glow = 25 };
+        var zoneFile = new IniFile();
+        zone.Write(zoneFile);
+        Look zoneBack = Look.Read(zoneFile);
+        Check("look: clear/glow round trip", zoneBack.Clear == 60 && zoneBack.ClearSide == "left" && zoneBack.Glow == 25 &&
+            zoneBack.SamePresent(zone), null);
+        var badSide = new IniFile();
+        badSide.Set("clearSide", "sideways");
+        Check("look: unknown clearSide falls back to none", Look.Read(badSide).ClearSide == "", null);
+        Check("look: defaults need no alpha pass", !ArtworkLook.NeedsAlpha(new Look()), null);
+        Check("look: SamePresent ignores render fields", new Look { Tint = 9 }.SamePresent(new Look { Tint = 77 }), null);
+    }
+
+    private static void AlphaMaskCases()
+    {
+        var left = new Look { Clear = 100, ClearSide = "left" };
+        byte[] columns = ArtworkLook.ClearColumns(1000, left);
+        Check("mask: clear=100 left starts fully clear", columns != null && columns[0] == 0, columns != null ? columns[0].ToString() : "null");
+        Check("mask: left ramp reaches full by 60%", columns != null && columns[600] == 255 && columns[999] == 255,
+            columns != null ? columns[600] + "," + columns[999] : "null");
+        Check("mask: left ramp is monotonic", columns != null && columns[300] >= columns[0] && columns[599] >= columns[300], null);
+        var right = new Look { Clear = 100, ClearSide = "right" };
+        byte[] mirror = ArtworkLook.ClearColumns(1000, right);
+        Check("mask: right mirrors left", mirror != null && mirror[999] == 0 && mirror[0] == 255, null);
+        var center = new Look { Clear = 100, ClearSide = "center" };
+        byte[] band = ArtworkLook.ClearColumns(1000, center);
+        Check("mask: center floor in the middle, full at edges",
+            band != null && band[500] == 0 && band[0] == 255 && band[999] == 255, null);
+        var keep = new Look { Clear = 50, ClearSide = "left" };
+        byte[] partial = ArtworkLook.ClearColumns(1000, keep);
+        Check("mask: clear=50 keeps half the opacity in the zone", partial != null && partial[0] > 120 && partial[0] < 135,
+            partial != null ? partial[0].ToString() : "null");
+        Check("mask: no side or no clear means no mask",
+            ArtworkLook.ClearColumns(1000, new Look { Clear = 80 }) == null &&
+            ArtworkLook.ClearColumns(1000, new Look { ClearSide = "left" }) == null, null);
+
+        using (var frame = new Bitmap(4, 2, PixelFormat.Format32bppArgb))
+        {
+            for (int y = 0; y < 2; y++)
+                for (int x = 0; x < 4; x++)
+                    frame.SetPixel(x, y, Color.FromArgb(255, 100, 150, 200));
+            byte[] plain = ArtworkLook.AlphaPixels(frame, new Look());
+            Check("mask: no clear and no glow leaves pixels alone", plain[3] == 255 && plain[2] == 100, null);
+            byte[] masked = ArtworkLook.AlphaPixels(frame, new Look { Clear = 100, ClearSide = "left" });
+            // columns: x=0 n=0 -> 0; x=3 n=1 -> 255 (0.60 cutoff at 4px width)
+            Check("mask: zone pixel premultiplied to near-black transparent",
+                masked[3] == 0 && masked[0] == 0 && masked[1] == 0 && masked[2] == 0, masked[3].ToString());
+            Check("mask: far pixel keeps its colour, opaque", masked[15] == 255 && masked[14] == 100 &&
+                masked[13] == 150 && masked[12] == 200, masked[15].ToString());
+        }
+        using (var dark = new Bitmap(2, 1, PixelFormat.Format32bppArgb))
+        {
+            dark.SetPixel(0, 0, Color.FromArgb(255, 10, 10, 10));
+            dark.SetPixel(1, 0, Color.FromArgb(255, 250, 250, 250));
+            byte[] glow = ArtworkLook.AlphaPixels(dark, new Look { Glow = 100 });
+            Check("mask: glow=100 hides dark pixels, keeps bright ones", glow[3] < 12 && glow[7] > 240, glow[3] + "," + glow[7]);
+            Check("mask: glow premultiplies rgb", glow[2] <= glow[3] && glow[6] == (250 * 250 + 127) / 255, glow[2] + "," + glow[6]);
+        }
+        Check("mask: NeedsAlpha on clear or glow", ArtworkLook.NeedsAlpha(new Look { Clear = 1 }) &&
+            ArtworkLook.NeedsAlpha(new Look { Glow = 1 }) && !ArtworkLook.NeedsAlpha(new Look()), null);
+        Check("mask: a fitted frame needs alpha for its bars", ArtworkLook.NeedsAlpha(new Look { Fit = "contain" }) &&
+            !ArtworkLook.NeedsAlpha(new Look { Fit = "cover" }), null);
+        Check("mask: vignette alone needs the pixel pass but not alpha",
+            ArtworkLook.NeedsPixelPass(new Look { Vignette = 30 }) && !ArtworkLook.NeedsAlpha(new Look { Vignette = 30 }), null);
+    }
+
+    private static void SharperLookCases()
+    {
+        using (var img = new Bitmap(3, 1, PixelFormat.Format24bppRgb))
+        {
+            img.SetPixel(0, 0, Color.FromArgb(255, 0, 0));
+            img.SetPixel(1, 0, Color.FromArgb(0, 255, 0));
+            img.SetPixel(2, 0, Color.FromArgb(0, 0, 255));
+            using (var grey = ArtworkLook.Render(img, new Look { Sat = 0 }))
+            {
+                Color p = grey.GetPixel(1, 0);
+                Check("sat: 0 desaturates to luma", Math.Abs(p.R - p.G) < 8 && Math.Abs(p.G - p.B) < 8, p.ToString());
+            }
+            Check("sat: 100 returns the source unchanged",
+                object.ReferenceEquals(ArtworkLook.Render(img, new Look { Sat = 100 }), img), null);
+            using (var vivid = ArtworkLook.Render(img, new Look { Sat = 150 }))
+            {
+                Color p = vivid.GetPixel(0, 0);
+                Check("sat: 150 pushes the red channel out", p.R >= 250 && p.G < 60, p.ToString());
+            }
+            using (var faded = ArtworkLook.Render(img, new Look { Fade = 100 }))
+            {
+                Color p = faded.GetPixel(0, 0);
+                Check("fade: 100 reaches the light shade", Math.Abs(p.R - 245) < 8 && Math.Abs(p.G - 245) < 8 &&
+                    Math.Abs(p.B - 245) < 8, p.ToString());
+            }
+            using (var dimmed = ArtworkLook.Render(img, new Look { Dim = 50 }))
+            {
+                Color p = dimmed.GetPixel(0, 0);
+                Check("dim: 50 keeps the dark shade direction", p.R > p.B || p.B > p.R, p.ToString());
+            }
+        }
+        var image = new Size(1000, 500);
+        RectangleF src; Rectangle dst; InterpolationMode mode;
+        ArtworkLook.FramePlan(image, new Size(800, 800), new Look(), out src, out dst, out mode);
+        Check("fit: cover fills the frame, crops the source",
+            dst == new Rectangle(0, 0, 800, 800) && src.Width < image.Width, dst + ";" + src);
+        ArtworkLook.FramePlan(image, new Size(800, 800), new Look { Fit = "contain" }, out src, out dst, out mode);
+        Check("fit: contain letterboxes the whole image",
+            dst == new Rectangle(0, 200, 800, 400) && src.Width == 1000, dst + ";" + src);
+        ArtworkLook.FramePlan(image, new Size(800, 800), new Look { Fit = "center" }, out src, out dst, out mode);
+        Check("fit: center is 1:1 in the middle", dst == new Rectangle(0, 150, 800, 500) &&
+            src == new RectangleF(100, 0, 800, 500), dst + ";" + src);
+        ArtworkLook.FramePlan(image, new Size(2600, 2600), new Look { Fit = "pixel" }, out src, out dst, out mode);
+        Check("fit: pixel art scales by integers with nearest neighbour",
+            dst == new Rectangle(300, 800, 2000, 1000) && mode == InterpolationMode.NearestNeighbor, dst + ";" + mode);
+        using (var frame = new Bitmap(101, 101, PixelFormat.Format32bppArgb))
+        {
+            for (int y = 0; y < 101; y++) for (int x = 0; x < 101; x++) frame.SetPixel(x, y, Color.FromArgb(255, 200, 200, 200));
+            byte[] vig = ArtworkLook.AlphaPixels(frame, new Look { Vignette = 100 });
+            int ci = (50 * 101 + 50) * 4, ei = (50 * 101 + 100) * 4;
+            Check("vignette: centre keeps full colour", vig[ci + 2] == 200, vig[ci + 2].ToString());
+            Check("vignette: edge darkened, alpha kept", vig[ei + 2] < 200 && vig[ei + 3] == 255, vig[ei + 2] + "," + vig[ei + 3]);
+        }
+        string root = Temp("looks");
+        string keep = Environment.GetEnvironmentVariable("ANIMATED_THEMES");
+        Environment.SetEnvironmentVariable("ANIMATED_THEMES", Path.Combine(root, "Themes"));
+        try
+        {
+            LookPresets.Save("Test Look", new Look { Clear = 55, ClearSide = "right", Glow = 12, Sat = 140, Fit = "contain" });
+            Check("presets: saved and listed", LookPresets.Names().Length == 1 && LookPresets.Names()[0] == "Test Look",
+                string.Join(",", LookPresets.Names()));
+            Look back = LookPresets.Load("Test Look");
+            Check("presets: look round-trips", back.Clear == 55 && back.ClearSide == "right" && back.Glow == 12 &&
+                back.Sat == 140 && back.Fit == "contain", back.Clear + " " + back.Fit);
+            LookPresets.Delete("Test Look");
+            Check("presets: deleted", LookPresets.Names().Length == 0, null);
+        }
+        finally { Environment.SetEnvironmentVariable("ANIMATED_THEMES", keep); }
+    }
+
+    private static void AnimationStyleCases()
+    {
+        Check("style: normalize", SplashText.NormalizeStyle(" Short ") == "short" && SplashText.NormalizeStyle("full") == "full" &&
+            SplashText.NormalizeStyle("bogus") == "" && SplashText.NormalizeStyle(null) == "", null);
+        Check("style: skins normalize",
+            SplashText.NormalizeStyle(" Terminal ") == "terminal" && SplashText.NormalizeStyle("MANGA") == "manga" &&
+            SplashText.NormalizeStyle("minimal") == "minimal" && SplashText.NormalizeStyle("retro") == "", null);
+        var textIni = new IniFile();
+        new SplashText { Style = "bogus" }.Write(textIni);
+        Check("style: write normalizes", textIni.Get("style") == "", textIni.Get("style"));
+        new SplashText { Style = "short" }.Write(textIni);
+        Check("style: short written", textIni.Get("style") == "short", null);
+
+        string root = Temp("anim-profile");
+        AppProfile profile = AppProfile.Load(root);
+        Check("style: app defaults", profile.Style == "full" && profile.Speed == 1 && !profile.SplashOnce, null);
+        profile.Style = "short"; profile.Speed = 3; profile.SplashOnce = true; profile.Save();
+        AppProfile back = AppProfile.Load(root);
+        Check("style: app round-trips", back.Style == "short" && back.Speed == 3 && back.SplashOnce &&
+            IniFile.Load(Path.Combine(root, "settings.ini")).Get("style") == "short" &&
+            IniFile.Load(Path.Combine(root, "settings.ini")).Get("once") == "on", null);
+        File.WriteAllText(Path.Combine(root, "settings.ini"), "style=wide\nspeed=9\nonce=yes\n");
+        back = AppProfile.Load(root);
+        Check("style: invalid values fall back", back.Style == "full" && back.Speed == 3 && !back.SplashOnce,
+            back.Style + " " + back.Speed + " " + back.SplashOnce);
+
+        string work = Temp("anim-apply");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            string theme = Path.Combine(ThemeLibrary.RootOverride, "Carded");
+            Directory.CreateDirectory(theme);
+            WriteJpeg(Path.Combine(theme, "wallpaper.jpg"), Color.Teal);
+            var themeIni = new IniFile();
+            themeIni.Set("style", "short");
+            themeIni.Save(Path.Combine(theme, "theme.ini"));
+            string app = Path.Combine(work, "App");
+            Directory.CreateDirectory(app);
+            ThemeLibrary.Apply("Carded", app);
+            Check("style: apply takes the theme's style", AppProfile.Load(app).Style == "short", null);
+            File.WriteAllText(Path.Combine(theme, "theme.ini"), "title=X\n");
+            ThemeLibrary.Apply("Carded", app);
+            Check("style: a theme without a style keeps the app's", AppProfile.Load(app).Style == "short", null);
+            AppProfile p = AppProfile.Load(app); p.Style = "full"; p.Save();
+            var saved = new IniFile();
+            new SplashText { Style = "short", Title = "T" }.Write(saved);
+            SplashText stored;
+            ThemeLibrary.Save("Carded", new Look(), SplashText.Read(saved), new[] { app }, out stored);
+            Check("style: saving a styled theme reaches the app", AppProfile.Load(app).Style == "short", null);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
+
+        string splashFolder = Temp("anim-splash");
+        var ini = new IniFile();
+        ini.Set("style", "short");
+        ini.Set("speed", "3");
+        ini.Save(Path.Combine(splashFolder, "settings.ini"));
+        SplashContent content = SplashContent.Load(splashFolder, "Devin", new Size(800, 600));
+        Check("style: splash content reads style and speed", content.Style == "short" && content.Rate == 3,
+            content.Style + " " + content.Rate);
+        string html = Encoding.UTF8.GetString(SplashPage.RenderIndex(
+            Encoding.UTF8.GetBytes("<main data-rate=\"{{RATE}}\" data-style=\"{{STYLE}}\"></main>"), content, "Devin"));
+        Check("style: tokens rendered", html.Contains("data-rate=\"3\"") && html.Contains("data-style=\"short\""), html);
+        var skinIni = new IniFile();
+        skinIni.Set("style", "terminal");
+        skinIni.Save(Path.Combine(splashFolder, "settings.ini"));
+        content = SplashContent.Load(splashFolder, "Devin", new Size(800, 600));
+        html = Encoding.UTF8.GetString(SplashPage.RenderIndex(
+            Encoding.UTF8.GetBytes("<main data-style=\"{{STYLE}}\"></main>"), content, "Devin"));
+        Check("style: skin token passes through", html.Contains("data-style=\"terminal\""), html);
+
+        string stampDir = Temp("anim-stamp");
+        Check("memory: first sign-in is unmarked", !SplashMemory.PlayedOrMark(stampDir), null);
+        Check("memory: same sign-in is marked", SplashMemory.PlayedOrMark(stampDir), null);
+        File.WriteAllText(Path.Combine(stampDir, SplashMemory.StampName), "some older session");
+        Check("memory: a different session marker plays again", !SplashMemory.PlayedOrMark(stampDir), null);
+    }
+
+    private static void GradientCases()
+    {
+        // ---- spec parse/format ----
+        GradientSpec spec;
+        Check("gradient: well-formed spec parses", GradientSpec.TryParse("#FF0000| #0000ff | 90", out spec) &&
+            spec.From.R == 255 && spec.To.B == 255 && spec.Degrees == 90, spec.Format());
+        Check("gradient: degrees wrap into 0..359", GradientSpec.TryParse("#111111|#222222|450", out spec) &&
+            spec.Degrees == 90 && GradientSpec.TryParse("#111111|#222222|-90", out spec) && spec.Degrees == 270,
+            spec.Degrees.ToString());
+        Check("gradient: two parts rejected", !GradientSpec.TryParse("#111111|#222222", out spec), null);
+        Check("gradient: bad colour rejected", !GradientSpec.TryParse("red|#222222|90", out spec) &&
+            !GradientSpec.TryParse("#111111|#222|90", out spec), null);
+        Check("gradient: bad angle rejected", !GradientSpec.TryParse("#111111|#222222|tilt", out spec), null);
+        Check("gradient: empty rejected", !GradientSpec.TryParse("", out spec) && !GradientSpec.TryParse(null, out spec), null);
+        GradientSpec.TryParse("#102030|#A0B0C0|123", out spec);
+        GradientSpec again;
+        Check("gradient: format/parse round trip", GradientSpec.TryParse(spec.Format(), out again) &&
+            again.Format() == spec.Format(), spec.Format());
+
+        // ---- rendered bitmap ----
+        GradientSpec.TryParse("#FF0000|#0000FF|0", out spec);
+        byte[] jpeg = spec.RenderJpeg();
+        using (var rendered = ImageCodec.DecodeJpeg(jpeg))
+        {
+            Check("gradient: renders a 1600x900 bitmap", rendered.Width == 1600 && rendered.Height == 900,
+                rendered.Width + "x" + rendered.Height);
+            Color left = rendered.GetPixel(20, 450), right = rendered.GetPixel(1580, 450);
+            Check("gradient: angle 0 goes red on the left", left.R > 180 && left.B < 90,
+                left.R + "," + left.G + "," + left.B);
+            Check("gradient: angle 0 goes blue on the right", right.B > 180 && right.R < 90,
+                right.R + "," + right.G + "," + right.B);
+        }
+        GradientSpec.TryParse("#FF0000|#0000FF|90", out spec);
+        using (var rendered = ImageCodec.DecodeJpeg(spec.RenderJpeg()))
+        {
+            Color top = rendered.GetPixel(800, 20), bottom = rendered.GetPixel(800, 880);
+            Check("gradient: angle 90 goes red on top", top.R > 180 && top.B < 90, top.R + "," + top.B);
+            Check("gradient: angle 90 goes blue on the bottom", bottom.B > 180 && bottom.R < 90, bottom.R + "," + bottom.B);
+        }
+        GradientSpec.TryParse("#FF0000|#0000FF|180", out spec);
+        using (var rendered = ImageCodec.DecodeJpeg(spec.RenderJpeg()))
+        {
+            Color left = rendered.GetPixel(40, 450), right = rendered.GetPixel(1560, 450), edge = rendered.GetPixel(0, 450);
+            Check("gradient: angle 180 runs right to left", right.R > 180 && left.B > 180, right.R + "/" + left.B);
+            Check("gradient: angle 180 leaves no start-colour line on the far edge", edge.B > 180 && edge.R < 90,
+                edge.R + "," + edge.G + "," + edge.B);
+        }
+        GradientSpec.TryParse("#FF0000|#0000FF|270", out spec);
+        using (var rendered = ImageCodec.DecodeJpeg(spec.RenderJpeg()))
+        {
+            Color edge = rendered.GetPixel(800, 0);
+            Check("gradient: angle 270 leaves no start-colour line on the top edge", edge.B > 180 && edge.R < 90,
+                edge.R + "," + edge.G + "," + edge.B);
+        }
+
+        // ---- theme creation from jpeg bytes + metadata ----
+        string work = Temp("grad-themes");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            GradientSpec.TryParse("#3C9C8F|#8C66D1|135", out spec);
+            string name = ThemeLibrary.CreateFromJpeg(spec.RenderJpeg(), "Gradient");
+            string folder = ThemeLibrary.Folder(name);
+            Check("byte theme: created with wallpaper + ini", name == "Gradient" &&
+                File.Exists(Path.Combine(folder, "wallpaper.jpg")) &&
+                File.Exists(Path.Combine(folder, "theme.ini")), name);
+            Check("byte theme: same base name dedupes",
+                ThemeLibrary.CreateFromJpeg(spec.RenderJpeg(), "Gradient") == "Gradient 2", null);
+            ThemeLibrary.SetGradient(name, spec);
+            Check("byte theme: gradient metadata round trip", ThemeLibrary.GradientOf(name) == spec.Format(),
+                ThemeLibrary.GradientOf(name));
+            // Saving look/text through the normal writer keeps the gradient key.
+            var file = IniFile.Load(Path.Combine(folder, "theme.ini"));
+            file.Set("title", "STILL A GRADIENT");
+            file.Save(Path.Combine(folder, "theme.ini"));
+            Check("byte theme: ini save preserves gradient key", ThemeLibrary.GradientOf(name) == spec.Format(), null);
+            using (var wallpaper = ImageCodec.DecodeJpeg(ImageCodec.ReadBytes(Path.Combine(folder, "wallpaper.jpg"))))
+            {
+                Color[] accents = ArtworkLook.SuggestAccents(wallpaper, 3);
+                Check("byte theme: gradient accents suggested", accents.Length > 0, accents.Length.ToString());
+            }
+            Check("byte theme: broken theme rejected", ThemeLibrary.GradientOf("does not exist") == "", null);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
+
+        // ---- jpeg encode/decode ----
+        using (var source = new Bitmap(64, 64))
+        {
+            using (var g = Graphics.FromImage(source)) g.Clear(Color.FromArgb(10, 200, 30));
+            byte[] encoded = ImageCodec.EncodeJpeg(source);
+            using (var decoded = ImageCodec.DecodeJpeg(encoded))
+                Check("jpeg: encode/decode keeps size and colour", decoded.Width == 64 &&
+                    Math.Abs(decoded.GetPixel(32, 32).G - 200) < 30, null);
+        }
+    }
+
+    private static void TextZoneCases()
+    {
+        // The lower-left band is measured; top-right does not count.
+        using (var img = new Bitmap(10, 10, PixelFormat.Format24bppRgb))
+        {
+            using (var g = Graphics.FromImage(img)) g.Clear(Color.Black);
+            Check("text zone: all-dark image reads 0", ArtworkLook.TextZoneLuma(img) == 0,
+                ArtworkLook.TextZoneLuma(img).ToString());
+            for (int y = 0; y < 4; y++) for (int x = 8; x < 10; x++) img.SetPixel(x, y, Color.White);
+            Check("text zone: bright top-right ignored", ArtworkLook.TextZoneLuma(img) == 0,
+                ArtworkLook.TextZoneLuma(img).ToString());
+            for (int y = 6; y < 10; y++) for (int x = 0; x < 5; x++) img.SetPixel(x, y, Color.White);
+            int luma = ArtworkLook.TextZoneLuma(img);
+            Check("text zone: bright lower-left counted", luma > 120, luma.ToString());
+        }
+        using (var img = new Bitmap(1, 1, PixelFormat.Format24bppRgb))
+        {
+            img.SetPixel(0, 0, Color.White);
+            Check("text zone: 1x1 white reads ~255", ArtworkLook.TextZoneLuma(img) > 250,
+                ArtworkLook.TextZoneLuma(img).ToString());
+        }
+    }
+
+    private static void VarietyCases()
+    {
+        // rotate= parsing: off|start|whole minutes 5..1440.
+        Check("rotate: parsing", AppProfile.NormalizeRotate("off") == "off" &&
+            AppProfile.NormalizeRotate(" start ") == "start" && AppProfile.NormalizeRotate("60") == "60" &&
+            AppProfile.NormalizeRotate("4") == "off" && AppProfile.NormalizeRotate("1441") == "off" &&
+            AppProfile.NormalizeRotate("bogus") == "off" && AppProfile.NormalizeRotate(null) == "off", null);
+
+        // Round-trip of the new app keys through settings.ini.
+        string prof = Temp("variety-profile");
+        var seed = new IniFile();
+        seed.Set("rotate", "start"); seed.Set("rotateFavs", "on"); seed.Set("followWindows", "on");
+        seed.Set("themeLight", "Sunny"); seed.Set("applied", "Sunny");
+        seed.Save(Path.Combine(prof, "settings.ini"));
+        AppProfile back = AppProfile.Load(prof);
+        Check("profile: variety keys round-trip", back.Rotate == "start" && back.RotateFavs &&
+            back.FollowWindows && back.ThemeLight == "Sunny" && back.Applied == "Sunny",
+            back.Rotate + " " + back.Applied);
+        back.Save();
+        Check("profile: save keeps variety keys", AppProfile.Load(prof).ThemeLight == "Sunny" &&
+            AppProfile.Load(prof).Applied == "Sunny" && AppProfile.Load(prof).RotateFavs, null);
+
+        // ApplyForMode slot semantics against a scratch library.
+        string work = Temp("variety-apply");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            foreach (string name in new[] { "Dark One", "Light Two" })
+            {
+                string folder = Path.Combine(ThemeLibrary.RootOverride, name);
+                Directory.CreateDirectory(folder);
+                WriteJpeg(Path.Combine(folder, "wallpaper.jpg"), name == "Dark One" ? Color.Black : Color.White);
+            }
+            string app = Path.Combine(work, "App");
+            Directory.CreateDirectory(app);
+
+            // Base slot: the pick always lands in theme=.
+            ThemeLibrary.ApplyForMode("Dark One", app, "theme");
+            AppProfile p = AppProfile.Load(app);
+            Check("apply: follow-off puts the pick in theme=", p.Theme == "Dark One" &&
+                p.ThemeLight == "" && p.Applied == "Dark One", p.Theme + "/" + p.Applied);
+
+            // Light slot: the pick lands in themeLight=, theme= keeps the dark pick.
+            p.FollowWindows = true; p.Save();
+            ThemeLibrary.ApplyForMode("Light Two", app, "themeLight");
+            p = AppProfile.Load(app);
+            Check("apply: light mode fills themeLight=, keeps theme=", p.ThemeLight == "Light Two" &&
+                p.Theme == "Dark One" && p.Applied == "Light Two", p.Theme + "/" + p.ThemeLight);
+
+            // Back to the base slot: the pick lands in theme= again.
+            ThemeLibrary.ApplyForMode("Dark One", app, "theme");
+            p = AppProfile.Load(app);
+            Check("apply: dark mode fills theme=, keeps themeLight=", p.Theme == "Dark One" &&
+                p.ThemeLight == "Light Two" && p.Applied == "Dark One", p.Theme + "/" + p.Applied);
+
+            // Picking the same name as the dark pick in the light slot keeps theme= sane.
+            ThemeLibrary.ApplyForMode("Dark One", app, "themeLight");
+            p = AppProfile.Load(app);
+            Check("apply: light pick equal to dark pick stays consistent", p.Theme == "Dark One" &&
+                p.ThemeLight == "Dark One" && p.Applied == "Dark One", p.ThemeLight);
+
+            // Night slot: the pick lands in themeNight=, theme= keeps the dark pick.
+            ThemeLibrary.ApplyForMode("Light Two", app, "themeNight");
+            p = AppProfile.Load(app);
+            Check("apply: night slot fills themeNight=, keeps theme=", p.ThemeNight == "Light Two" &&
+                p.Theme == "Dark One" && p.Applied == "Light Two", p.Theme + "/" + p.ThemeNight);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
+
+        // Pool + next-in-pool under a scratch data root (favorites live in studio.ini).
+        string keepData = Environment.GetEnvironmentVariable("ANIMATED_DATA");
+        string data = Temp("variety-data");
+        Environment.SetEnvironmentVariable("ANIMATED_DATA", data);
+        try
+        {
+            string themes = Path.Combine(data, "Animated Launchers", "Themes");
+            foreach (string name in new[] { "Alpha", "Beta", "Gamma" })
+            {
+                Directory.CreateDirectory(Path.Combine(themes, name));
+                WriteJpeg(Path.Combine(themes, name, "wallpaper.jpg"), Color.Gray);
+            }
+            Check("pool: all themes without the favs flag",
+                string.Join(",", ThemeLibrary.RotationPool(false)) == "Alpha,Beta,Gamma",
+                string.Join(",", ThemeLibrary.RotationPool(false)));
+            var prefs = new IniFile();
+            prefs.Set("favorites", "Gamma|Alpha|Missing");
+            prefs.Save(Path.Combine(data, "Animated Launchers", "studio.ini"));
+            Check("pool: favorites only, in library order, missing dropped",
+                string.Join(",", ThemeLibrary.RotationPool(true)) == "Alpha,Gamma",
+                string.Join(",", ThemeLibrary.RotationPool(true)));
+            Check("next: wraps and skips the missing",
+                ThemeLibrary.NextInPool(new[] { "Alpha", "Beta", "Gamma" }, "Gamma") == "Alpha" &&
+                ThemeLibrary.NextInPool(new[] { "Alpha", "Beta" }, "Gamma") == "Alpha" &&
+                ThemeLibrary.NextInPool(new string[0], "x") == "", null);
+
+            // The tray's visibility nudge rewrites opacity= clamped to 4..40.
+            string appDir = Path.Combine(data, "Nudge App");
+            Directory.CreateDirectory(appDir);
+            var lookIni = new IniFile();
+            lookIni.Set("opacity", "38");
+            lookIni.Save(Path.Combine(appDir, "settings.ini"));
+            ThemeLibrary.NudgeOpacity(appDir, 5);
+            ThemeLibrary.NudgeOpacity(appDir, -100);
+            Check("nudge: opacity steps and clamps", IniFile.Load(Path.Combine(appDir, "settings.ini")).Get("opacity") == "4",
+                IniFile.Load(Path.Combine(appDir, "settings.ini")).Get("opacity"));
+            ThemeLibrary.NudgeOpacity(appDir, -5);
+            Check("nudge: clamped at the floor", IniFile.Load(Path.Combine(appDir, "settings.ini")).Get("opacity") == "4", null);
+        }
+        finally { Environment.SetEnvironmentVariable("ANIMATED_DATA", keepData); }
+    }
+
+    private static void NightCases()
+    {
+        // The night window wraps midnight; start == until means no window.
+        Check("night: window wraps midnight", ThemeLibrary.IsNight(20, 7, 21) &&
+            ThemeLibrary.IsNight(20, 7, 6) && !ThemeLibrary.IsNight(20, 7, 12) &&
+            !ThemeLibrary.IsNight(20, 7, 7) && ThemeLibrary.IsNight(20, 7, 20), null);
+        Check("night: day window and empty window", ThemeLibrary.IsNight(7, 20, 10) &&
+            !ThemeLibrary.IsNight(7, 20, 21) && !ThemeLibrary.IsNight(9, 9, 9), null);
+
+        // The new app keys round-trip through settings.ini.
+        string prof = Temp("night-profile");
+        var seed = new IniFile();
+        seed.Set("themeNight", "Midnight"); seed.Set("nightStart", "22"); seed.Set("nightUntil", "5");
+        seed.Set("nightDim", "30"); seed.Set("extraDim", "10"); seed.Set("hideFullscreen", "off");
+        seed.Save(Path.Combine(prof, "settings.ini"));
+        AppProfile back = AppProfile.Load(prof);
+        Check("profile: night keys round-trip", back.ThemeNight == "Midnight" && back.NightStart == 22 &&
+            back.NightUntil == 5 && back.NightDim == 30 && back.ExtraDim == 10 && !back.HideFullscreen,
+            back.ThemeNight + " " + back.NightStart + "-" + back.NightUntil);
+        back.Save();
+        AppProfile again = AppProfile.Load(prof);
+        Check("profile: save keeps night keys", again.ThemeNight == "Midnight" && again.NightDim == 30 &&
+            !again.HideFullscreen, null);
+        string empty = Temp("night-empty");
+        AppProfile fresh = AppProfile.Load(empty);
+        Check("profile: night defaults sane", fresh.NightStart == 20 &&
+            fresh.NightUntil == 7 && fresh.HideFullscreen, null);
+        // Out-of-range hours clamp to 0..23.
+        var bad = new IniFile();
+        bad.Set("nightStart", "30"); bad.Set("nightUntil", "-4");
+        bad.Save(Path.Combine(prof, "settings.ini"));
+        AppProfile clamped = AppProfile.Load(prof);
+        Check("profile: night hours clamp", clamped.NightStart == 23 && clamped.NightUntil == 0,
+            clamped.NightStart + "-" + clamped.NightUntil);
+    }
+
+    private static void DetailCases()
+    {
+        Check("font: whitelist normalize",
+            SplashText.NormalizeFont(" Segoe ") == "segoe" && SplashText.NormalizeFont("MONO") == "mono" &&
+            SplashText.NormalizeFont("papyrus") == "" && SplashText.NormalizeFont(null) == "" &&
+            SplashText.NormalizeFont("serif;font-family:x") == "", null);
+        Check("frame: whitelist normalize",
+            SplashText.NormalizeFrame("Circle") == "circle" && SplashText.NormalizeFrame("hex") == "hex" &&
+            SplashText.NormalizeFrame("oval") == "" && SplashText.NormalizeFrame(null) == "", null);
+
+        var ini = new IniFile();
+        ini.Set("font", "mono"); ini.Set("frame", "circle");
+        ini.Set("lines", "p1|p2|p3|" + new string('y', 90));
+        SplashText text = SplashText.Read(ini);
+        Check("text: font/frame/lines read", text.Font == "mono" && text.Frame == "circle" && text.Lines.Length == 4 &&
+            text.Lines[3].Length == 80, text.Font + "/" + text.Frame + "/" + text.Lines.Length);
+        var written = new IniFile();
+        new SplashText { Font = "bogus", Frame = "hex", Lines = new[] { "a|b", " c " } }.Write(written);
+        Check("text: write normalizes font and joins pool", written.Get("font") == "" && written.Get("frame") == "hex" &&
+            written.Get("lines") == "a b|c", written.Get("font") + "/" + written.Get("frame") + "/" + written.Get("lines"));
+
+        Check("vars: all tokens expand", SplashContent.ExpandVars("{app}/{theme}/{user}/{starts}", "Devin", "HxH", 12) ==
+            "Devin/HxH/" + Environment.UserName + "/12", SplashContent.ExpandVars("{app}/{theme}/{user}/{starts}", "Devin", "HxH", 12));
+        Check("vars: date and time are real", System.Text.RegularExpressions.Regex.IsMatch(
+            SplashContent.ExpandVars("{date} {time}", "Devin", "", 0), @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$"), null);
+        Check("vars: theme empty falls back to app, unknown passes through",
+            SplashContent.ExpandVars("{theme}{bogus}", "Devin", "", 0) == "Devin{bogus}", null);
+        Check("vars: expanded line limited to 80",
+            SplashContent.ExpandVars(new string('x', 78) + "{app}", "Devin", "", 0).Length == 80, null);
+
+        string root = Temp("detail-plays");
+        Check("plays: zero for a fresh folder", SplashMemory.Plays(root) == 0, null);
+        Check("plays: count bumps and persists",
+            SplashMemory.CountPlay(root) == 1 && SplashMemory.CountPlay(root) == 2 && SplashMemory.Plays(root) == 2, null);
+        File.WriteAllText(Path.Combine(root, "plays.stamp"), "junk");
+        Check("plays: unreadable stamp reads 0", SplashMemory.Plays(root) == 0, null);
+
+        // Load a folder as an app profile: pool pick lands in slot 4, fixed keep 1-3.
+        var app = new IniFile();
+        app.Set("theme", "HxH"); // not original
+        app.Set("logs", "one|two|three|four");
+        app.Set("lines", "alpha|beta");
+        app.Set("font", "impact"); app.Set("frame", "diamond");
+        app.Save(Path.Combine(root, "settings.ini"));
+        SplashContent content = SplashContent.Load(root, "Devin", new Size(800, 600));
+        Check("pool: pick takes slot 4, fixed lines keep 1-3",
+            content.Logs[0] == "> one" && content.Logs[1] == "> two" && content.Logs[2] == "> three" &&
+            (content.Logs[3] == "> alpha" || content.Logs[3] == "> beta"), string.Join(",", content.Logs));
+        Check("content: font/frame flow to render", content.Font == "impact" && content.Frame == "diamond",
+            content.Font + "/" + content.Frame);
+
+        File.WriteAllText(Path.Combine(root, "plays.stamp"), "41");
+        app.Set("logs", "start number {starts}");
+        app.Set("lines", "");
+        app.Save(Path.Combine(root, "settings.ini"));
+        content = SplashContent.Load(root, "Devin", new Size(800, 600));
+        Check("vars: {starts} reads plays.stamp", content.Logs[0] == "> start number 41", content.Logs[0]);
+
+        byte[] template = Encoding.UTF8.GetBytes("<main data-font=\"{{FONT}}\" data-frame=\"{{FRAME}}\">x</main>");
+        string html = Encoding.UTF8.GetString(SplashPage.RenderIndex(template, content, "Devin"));
+        Check("render: font/frame tokens land in markup", html.Contains("data-font=\"impact\"") && html.Contains("data-frame=\"diamond\""), html);
     }
 
     private static void SplashTextCases()
@@ -127,6 +702,54 @@ internal static class LookTests
         var written = new IniFile();
         new SplashText { Title = "T", Subtitle = "S", Accent = "#112233", Logs = new[] { "one", "two" } }.Write(written);
         Check("text: logs joined with pipe", written.Get("logs") == "one|two", written.Get("logs"));
+    }
+
+    private static void StarterCases()
+    {
+        string work = Temp("starters");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            string[] made = ThemeLibrary.SeedStarters();
+            Check("starters: six created", made.Length == 6, made.Length.ToString());
+            Check("starters: all names present", Array.IndexOf(made, "Aurora fields") >= 0 &&
+                Array.IndexOf(made, "Paper dusk") >= 0 && Array.IndexOf(made, "Night garden") >= 0 &&
+                Array.IndexOf(made, "Sakura rain") >= 0 && Array.IndexOf(made, "Deep sea") >= 0 &&
+                Array.IndexOf(made, "Sunset") >= 0, string.Join(",", made));
+            foreach (string name in made)
+            {
+                string iniPath = Path.Combine(ThemeLibrary.Folder(name), "theme.ini");
+                Check("starters: " + name + " wallpaper decodes",
+                    File.Exists(Path.Combine(ThemeLibrary.Folder(name), "wallpaper.jpg")) &&
+                    ImageCodec.DecodeJpeg(File.ReadAllBytes(Path.Combine(ThemeLibrary.Folder(name), "wallpaper.jpg"))) != null, name);
+                Check("starters: " + name + " credit set",
+                    IniFile.Load(iniPath).Get("credit") == "Generated by Animated Launchers",
+                    IniFile.Load(iniPath).Get("credit"));
+            }
+            Check("starters: Deep sea is a gradient theme",
+                IniFile.Load(Path.Combine(ThemeLibrary.Folder("Deep sea"), "theme.ini")).Get("gradient") == "#062E4F|#0A7C8C|160",
+                IniFile.Load(Path.Combine(ThemeLibrary.Folder("Deep sea"), "theme.ini")).Get("gradient"));
+            Check("starters: procedural themes carry no gradient key",
+                IniFile.Load(Path.Combine(ThemeLibrary.Folder("Aurora fields"), "theme.ini")).Get("gradient") == null, null);
+
+            // Idempotent: a second seed creates nothing.
+            string[] again = ThemeLibrary.SeedStarters();
+            Check("starters: reseeding creates nothing", again.Length == 0, again.Length.ToString());
+
+            // No-overwrite: a user theme named like a starter is untouched.
+            string user = Path.Combine(ThemeLibrary.Folder("Sunset"), "theme.ini");
+            File.AppendAllText(user, "mine=yes\n");
+            ThemeLibrary.SeedStarters();
+            Check("starters: user theme not overwritten", IniFile.Load(user).Get("mine") == "yes", null);
+
+            // Thumbnails: six entries, each a decodable jpeg.
+            var thumbs = ThemeLibrary.StarterThumbs();
+            Check("starters: six thumbs", thumbs.Count == 6, thumbs.Count.ToString());
+            bool allDecode = thumbs.Count == 6;
+            foreach (var pair in thumbs) allDecode = allDecode && ImageCodec.DecodeJpeg(pair.Value) != null;
+            Check("starters: thumbs decode", allDecode, null);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
     }
 
     private static void ProfileRoundTrip()
@@ -147,8 +770,123 @@ internal static class LookTests
         Check("profile: theme and look kept", back.Theme == "T" && back.Look.Blur == 33, null);
         Check("profile: unknown key kept", IniFile.Load(path).Get("futureKey") == "42", null);
         Check("profile: file documents every known key",
-            IniFile.Load(path).Get("focusX") == "50" && IniFile.Load(path).Get("logs") == "" && IniFile.Load(path).Get("splash") == "off", null);
-        Check("profile: missing file gives defaults", AppProfile.Load(Temp("empty")).SplashOnStart && AppProfile.Load(Temp("empty2")).Speed == 1, null);
+            IniFile.Load(path).Get("focusX") == "50" && IniFile.Load(path).Get("logs") == "" && IniFile.Load(path).Get("splash") == "off" &&
+            IniFile.Load(path).Get("watch") == "on", null);
+        Check("profile: missing file gives defaults", AppProfile.Load(Temp("empty")).SplashOnStart && AppProfile.Load(Temp("empty2")).Speed == 1 &&
+            AppProfile.Load(Temp("empty3")).Watch, null);
+        string watchRoot = Temp("watch");
+        File.WriteAllText(Path.Combine(watchRoot, "settings.ini"), "watch=off\nsplash=off\n");
+        AppProfile watchOff = AppProfile.Load(watchRoot);
+        Check("profile: watch=off reads off, other keys still read", !watchOff.Watch && !watchOff.SplashOnStart, null);
+        watchOff.Watch = true;
+        watchOff.Save();
+        Check("profile: watch=on written", IniFile.Load(Path.Combine(watchRoot, "settings.ini")).Get("watch") == "on", null);
+    }
+
+    private static void AppTableCases()
+    {
+        Check("apps: ten are described", AppTable.All.Length == 10, AppTable.All.Length.ToString());
+        var ids = new List<string>();
+        var helpers = new List<string>();
+        foreach (App app in AppTable.All) { ids.Add(app.Id); helpers.Add(app.HelperName); }
+        ids.Sort(); helpers.Sort();
+        Check("apps: ids cover the four agents, the three editors and the three untested ones",
+            string.Join(",", ids.ToArray()) == "antigravity,claude,codex,cursor,devin,kiro,obsidian,vscode,vscodium,windsurf",
+            string.Join(",", ids.ToArray()));
+        Check("dispatch: DevinAnimated.exe -> devin", AppTable.ByExeName("DevinAnimated.exe").Id == "devin", null);
+        Check("dispatch: VSCodeAnimated.exe -> vscode",
+            AppTable.ByExeName("VSCodeAnimated.exe") != null && AppTable.ByExeName("VSCodeAnimated.exe").Id == "vscode", null);
+        Check("dispatch: every app has a unique helper name", new HashSet<string>(helpers, StringComparer.OrdinalIgnoreCase).Count == 10, null);
+        Check("dispatch: bare name and case both work",
+            AppTable.ByExeName("claudeanimated").Id == "claude" && AppTable.ByExeName("CodexAnimated").Id == "codex", null);
+        Check("dispatch: the neutral exe is no app", AppTable.ByExeName("AnimatedLauncher.exe") == null, null);
+        Check("dispatch: ThemeStudio and unknown names are no app",
+            AppTable.ByExeName("ThemeStudio.exe") == null && AppTable.ByExeName("notepad.exe") == null, null);
+        Check("lookup: ById matches id case-insensitively",
+            AppTable.ById("CLAUDE") == AppTable.ById("claude") && AppTable.ById("bogus") == null, null);
+        Check("mutexes: one helper and one animation across apps",
+            AppTable.ArtworkMutex == @"Local\AnimatedLaunchers.Artwork" && AppTable.PlayMutex == @"Local\AnimatedLaunchers.Splash.Play", null);
+        Check("run value: shared entry name", AppTable.RunValueName == "AnimatedLaunchers", null);
+        Check("exe name: the one binary", AppTable.HelperExeName == "AnimatedLauncher.exe", null);
+    }
+
+    private static void CustomAppCases()
+    {
+        var ini = new IniFile();
+        ini.Set("myapp", "My App|C:\\Tools\\MyApp.exe|chat");
+        ini.Set("note", " Notes |D:\\Apps\\notes.exe|bogus-preview");
+        ini.Set("devin", "Clash|C:\\x\\y.exe|editor");            // built-in id refused
+        ini.Set("Bad Id", "X|C:\\x\\z.exe|editor");               // spaces are not a valid id
+        ini.Set("rel", "X|bin\\app.exe|editor");                  // must be rooted
+        ini.Set("dir", "X|C:\\x|editor");
+        ini.Set("short", "X|C:\\only.exe");
+        ini.Set("empty", "");
+        var entries = CustomApps.ParseEntries(ini);
+        Check("custom: valid rows parse, invalid rows drop", entries.Count == 3,
+            entries.Count + ": " + string.Join(",", entries.ConvertAll(e => e.Id).ToArray()));
+        Check("custom: built-in and bad ids are refused",
+            !entries.Exists(e => e.Id == "devin" || e.Id == "bad id"), null);
+        Check("custom: unrooted and non-exe paths are refused",
+            !entries.Exists(e => e.Id == "rel" || e.Id == "dir"), null);
+        Check("custom: preview normalizes to chat or editor",
+            entries.Find(e => e.Id == "myapp").Preview == "chat" && entries.Find(e => e.Id == "note").Preview == "editor", null);
+        Check("custom: id lowercased, name trimmed",
+            entries.Find(e => e.Id == "note").Name == "Notes", entries.Find(e => e.Id == "note").Name);
+        Check("custom: a missing preview part defaults to editor",
+            entries.Find(e => e.Id == "short").Preview == "editor", null);
+        Check("custom: ids accept digits, dash and underscore, reject the rest",
+            CustomApps.ValidId("a1_-") && CustomApps.ValidId("app") &&
+            !CustomApps.ValidId("") && !CustomApps.ValidId("has space") && !CustomApps.ValidId("Upper") &&
+            !CustomApps.ValidId(new string('x', 25)), null);
+        Check("custom: name cleaning strips pipes, equals and file-hostile chars",
+            CustomApps.CleanName(" A|b=c:d? ") == "A b c d", CustomApps.CleanName(" A|b=c:d? "));
+
+        string keep = Environment.GetEnvironmentVariable("ANIMATED_DATA");
+        string root = Temp("custom-apps");
+        Environment.SetEnvironmentVariable("ANIMATED_DATA", root);
+        try
+        {
+            Check("custom: no file under a scratch root", CustomApps.Current.Length == 0, null);
+            string file = CustomApps.FilePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(file));
+            File.WriteAllText(file, "zed=Zed|" + Path.Combine(root, "zed.exe") + "|chat\n", Encoding.UTF8);
+            File.WriteAllText(Path.Combine(root, "zed.exe"), "not really a program");
+            Check("custom: the file is picked up", CustomApps.Current.Length == 1 &&
+                CustomApps.Current[0].Id == "zed" && CustomApps.Current[0].IsCustom, null);
+            App zed = CustomApps.Current[0];
+            Check("custom: any window class matches", zed.WindowClass == null, null);
+            Check("custom: only its exact exe is owned",
+                zed.Owns(Path.Combine(root, "zed.exe")) && !zed.Owns(Path.Combine(root, "other.exe")), null);
+            Check("custom: installed follows the exe file", zed.Installed, null);
+            Check("custom: product folder is stable",
+                zed.SettingsDirectory == Path.Combine(root, "Zed Animated"), zed.SettingsDirectory);
+            Check("custom: merged list keeps built-ins first",
+                AppTable.WithCustom().Length == AppTable.All.Length + 1 && AppTable.ById("zed") == zed, null);
+
+            string error;
+            App added = CustomApps.Add("Second App", Path.Combine(root, "second.exe"), "editor", out error);
+            Check("custom: Add refuses a missing exe", added == null && error != null, error);
+            File.WriteAllText(Path.Combine(root, "second.exe"), "x");
+            added = CustomApps.Add("Second App", Path.Combine(root, "second.exe"), "chat", out error);
+            Check("custom: Add writes the row and merges",
+                added != null && added.Id == "second-app" && AppTable.ById("second-app") != null &&
+                CustomApps.Current.Length == 2, added == null ? error : added.Id);
+            Check("custom: the ini row round-trips",
+                IniFile.Load(file).Get("second-app").EndsWith("second.exe|chat", StringComparison.OrdinalIgnoreCase),
+                IniFile.Load(file).Get("second-app"));
+            App again = CustomApps.Add("Copy", Path.Combine(root, "second.exe"), "editor", out error);
+            Check("custom: the same exe cannot be added twice", again == null && error != null, error);
+            Check("custom: Remove drops the row",
+                CustomApps.Remove("second-app") && CustomApps.Current.Length == 1 && AppTable.ById("second-app") == null, null);
+            Check("custom: removing twice is false", !CustomApps.Remove("second-app"), null);
+            // A changed row keeps its id but rebuilds the App, so sessions reconcile.
+            File.WriteAllText(Path.Combine(root, "zed2.exe"), "x");
+            File.WriteAllText(file, "zed=Zed|" + Path.Combine(root, "zed2.exe") + "|editor\n", Encoding.UTF8);
+            App[] now = CustomApps.Current;
+            Check("custom: an edited row gives a new App instance",
+                now.Length == 1 && now[0].Id == "zed" && !ReferenceEquals(now[0], zed), null);
+        }
+        finally { Environment.SetEnvironmentVariable("ANIMATED_DATA", keep); }
     }
 
     private static Bitmap Solid(int w, int h, Color color)
@@ -559,9 +1297,78 @@ internal static class LookTests
         return 0;
     }
 
+    // Rename, delete and edits follow every pick slot: night and light-mode picks
+    // are renamed and cleared with the theme, a favorite keeps its star, and an
+    // edit reaches only the apps showing the theme, through the slot it holds there.
+    private static void SlotReferenceCases()
+    {
+        string keepData = Environment.GetEnvironmentVariable("ANIMATED_DATA");
+        string data = Temp("slots");
+        Environment.SetEnvironmentVariable("ANIMATED_DATA", data);
+        ThemeLibrary.RootOverride = Path.Combine(data, "Themes");
+        try
+        {
+            foreach (string name in new[] { "Day", "Dusk", "Moon" })
+            {
+                string folder = ThemeLibrary.Folder(name);
+                Directory.CreateDirectory(folder);
+                WriteJpeg(Path.Combine(folder, "wallpaper.jpg"), name == "Moon" ? Color.Navy : Color.Orange);
+                File.WriteAllText(Path.Combine(folder, "theme.ini"), "opacity=15\r\n");
+            }
+            string app = Path.Combine(data, "App Animated");
+            Directory.CreateDirectory(app);
+            ThemeLibrary.ApplyForMode("Day", app, "theme");
+            ThemeLibrary.ApplyForMode("Moon", app, "themeNight");
+            AppProfile p = AppProfile.Load(app);
+            Check("slots: the night pick shows while theme= keeps the base pick",
+                p.Theme == "Day" && p.ThemeNight == "Moon" && p.Applied == "Moon", p.Theme + "/" + p.ThemeNight + "/" + p.Applied);
+            p.ThemeLight = "Dusk";
+            p.Save();
+            Check("slots: ShowingSlot names only the slot whose files are showing",
+                ThemeLibrary.ShowingSlot(app, "Moon") == "themeNight" && ThemeLibrary.ShowingSlot(app, "Day") == null &&
+                ThemeLibrary.ShowingSlot(app, "Dusk") == null, null);
+
+            string before = File.ReadAllText(Path.Combine(app, "settings.ini"));
+            SplashText stored;
+            ThemeLibrary.Save("Day", new Look { Opacity = 30 }, new SplashText { Title = "DAY" }, new[] { app }, out stored);
+            Check("slots: editing the base pick at night leaves the app alone",
+                File.ReadAllText(Path.Combine(app, "settings.ini")) == before, null);
+            ThemeLibrary.Save("Moon", new Look { Opacity = 22 }, new SplashText { Title = "MOON" }, new[] { app }, out stored);
+            AppProfile edited = AppProfile.Load(app);
+            Check("slots: editing the showing night pick reaches the app and keeps theme=",
+                edited.Look.Opacity == 22 && edited.Text.Title == "MOON" && edited.Theme == "Day" && edited.ThemeNight == "Moon", null);
+
+            Directory.CreateDirectory(ThemeLibrary.SharedRoot);
+            File.WriteAllText(Path.Combine(ThemeLibrary.SharedRoot, "studio.ini"), "favorites=Moon|Day\r\n");
+            ThemeLibrary.Rename("Moon", "Full Moon", new[] { app });
+            AppProfile renamed = AppProfile.Load(app);
+            Check("slots: rename follows the night pick and applied=",
+                renamed.ThemeNight == "Full Moon" && renamed.Applied == "Full Moon" && renamed.Theme == "Day", null);
+            string favorites = string.Join("|", ThemeLibrary.Favorites());
+            Check("slots: a renamed favorite keeps its star", favorites == "Full Moon|Day", favorites);
+            ThemeLibrary.Rename("Dusk", "Evening", new[] { app });
+            Check("slots: rename follows the light-mode pick", AppProfile.Load(app).ThemeLight == "Evening", null);
+
+            ThemeLibrary.ClearReferences("Full Moon", new[] { app });
+            ThemeLibrary.ClearReferences("Evening", new[] { app });
+            AppProfile cleared = AppProfile.Load(app);
+            Check("slots: deleting clears the night and light picks and keeps theme=",
+                cleared.ThemeNight == "" && cleared.ThemeLight == "" && cleared.Theme == "Day", null);
+            Check("slots: a window that is not there is never full screen", !QuietTime.IsAppFullScreen(IntPtr.Zero), null);
+        }
+        finally
+        {
+            ThemeLibrary.RootOverride = null;
+            Environment.SetEnvironmentVariable("ANIMATED_DATA", keepData);
+        }
+    }
+
     private static void LibraryOperations()
     {
         string work = Temp("ops");
+        // Rename also rewrites studio.ini's favorites, so the shared root is scratch too.
+        string keepData = Environment.GetEnvironmentVariable("ANIMATED_DATA");
+        Environment.SetEnvironmentVariable("ANIMATED_DATA", work);
         ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
         try
         {
@@ -619,7 +1426,11 @@ internal static class LookTests
             Check("clear references: theme= emptied, nothing else changed",
                 AppProfile.Load(onTheme).Theme == "" && settingsAfter == settingsBefore.Replace("theme=fresh name", "theme=") && AppProfile.Load(other).Theme == second, null);
         }
-        finally { ThemeLibrary.RootOverride = null; }
+        finally
+        {
+            ThemeLibrary.RootOverride = null;
+            Environment.SetEnvironmentVariable("ANIMATED_DATA", keepData);
+        }
     }
 
     private static void NameValidation()
@@ -634,6 +1445,344 @@ internal static class LookTests
         }
         Check("names: empty, too long, invalid characters, device names and trailing dot are rejected", allRejected, leaked);
         Check("names: trimmed and ordinary names pass", ThemeLibrary.ValidateName("  Sunset harbor ") == "Sunset harbor" && ThemeLibrary.ValidateName(new string('y', 60)).Length == 60, null);
+    }
+
+    private const string LineFormat = @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[\d+ [a-z]+\] ";
+
+    private static string[] LogLines(string file)
+    {
+        if (!File.Exists(file)) return new string[0];
+        string text = new UTF8Encoding(false).GetString(File.ReadAllBytes(file));
+        return text.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static string LogFile(string folder) { return Path.Combine(folder, "Logs", "helper.log"); }
+
+    private static void RunLogProcesses(string folder, int count)
+    {
+        string exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+        var running = new List<Process>();
+        foreach (string label in new[] { "a", "b", "c", "d" })
+            running.Add(Process.Start(new ProcessStartInfo(exe, "--log-append \"" + folder + "\" " + label + " " + count) { UseShellExecute = false, CreateNoWindow = true }));
+        foreach (Process process in running) { process.WaitForExit(120000); process.Dispose(); }
+    }
+
+    private static void LogCases()
+    {
+        Func<DateTime> realClock = AppLog.Clock;
+        try
+        {
+            string folder = Temp("log1");
+            AppLog.Start(folder, "test");
+            AppLog.Write("window", "hello");
+            byte[] bytes = File.ReadAllBytes(LogFile(folder));
+            string text = new UTF8Encoding(false).GetString(bytes);
+            Check("log: one write is one line in the expected format", Regex.IsMatch(text, @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[\d+ test\] window: hello\r\n$"), text);
+            Check("log: the file has no BOM", !(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF), null);
+
+            folder = Temp("log2");
+            AppLog.Start(folder, "test");
+            AppLog.Write("crash", "a\r\nb\nc");
+            Check("log: later lines of an entry are indented", File.ReadAllText(LogFile(folder)).EndsWith("crash: a\r\n    b\r\n    c\r\n"), null);
+
+            folder = Temp("log3");
+            DateTime now = new DateTime(2026, 1, 1, 12, 0, 0);
+            AppLog.Clock = delegate { return now; };
+            AppLog.Start(folder, "test");
+            for (int i = 0; i < 5; i++) AppLog.Write("window", "same");
+            AppLog.Write("window", "other");
+            string[] lines = LogLines(LogFile(folder));
+            Check("log: repeats are counted (entry, entry with count, other entry)",
+                lines.Length == 3 && lines[0].EndsWith("window: same") && lines[1].EndsWith("window: same [repeated 4 more times]") && lines[2].EndsWith("window: other"), string.Join(" | ", lines));
+
+            folder = Temp("log4");
+            now = new DateTime(2026, 1, 1, 12, 0, 0);
+            AppLog.Start(folder, "test");
+            AppLog.Write("window", "same");
+            now = now.AddSeconds(30);
+            AppLog.Write("window", "same");
+            now = now.AddSeconds(31);
+            AppLog.Write("window", "same");
+            lines = LogLines(LogFile(folder));
+            Check("log: the repeat window is one minute", lines.Length == 3 && lines[1].EndsWith("[repeated 1 more time]") && lines[2].EndsWith("window: same"), string.Join(" | ", lines));
+
+            folder = Temp("log5");
+            AppLog.Start(folder, "test");
+            AppLog.Write("window", "x");
+            AppLog.Write("window", "x");
+            AppLog.Flush();
+            int afterFirst = LogLines(LogFile(folder)).Length;
+            AppLog.Flush();
+            Check("log: Flush writes a pending count once", afterFirst == 2 && LogLines(LogFile(folder)).Length == 2, afterFirst.ToString());
+
+            AppLog.Clock = realClock;
+            folder = Temp("log6");
+            AppLog.Start(folder, "test");
+            string first = null, last = null;
+            for (int i = 0; i < 6000; i++)
+            {
+                last = i.ToString("D5") + new string('x', 95);
+                if (first == null) first = last;
+                AppLog.Write("size", last);
+            }
+            string current = LogFile(folder), older = Path.Combine(folder, "Logs", "helper.1.log");
+            string[] currentLines = LogLines(current), olderLines = LogLines(older);
+            bool firstGone = true;
+            foreach (string line in currentLines) if (line.EndsWith(first)) firstGone = false;
+            foreach (string line in olderLines) if (line.EndsWith(first)) firstGone = false;
+            Check("log: size limit keeps helper.log and helper.1.log under 256 KB, newest entry last, oldest gone",
+                new FileInfo(current).Length <= AppLog.MaxBytes && File.Exists(older) && new FileInfo(older).Length <= AppLog.MaxBytes &&
+                currentLines[currentLines.Length - 1].EndsWith(last) && firstGone,
+                new FileInfo(current).Length + " / " + new FileInfo(older).Length);
+
+            folder = Temp("log7");
+            AppLog.Start(folder, "test");
+            AppLog.Write("long", new string('y', 20000));
+            string longLine = LogLines(LogFile(folder))[0];
+            Check("log: a 20,000 character entry is cut", longLine.EndsWith(" [cut]") && longLine.Length < 16100, longLine.Length.ToString());
+
+            folder = Temp("log8");
+            AppLog.Start(folder, "test");
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            AppLog.Write("path", profile + "\\AppData\\x");
+            string stored = File.ReadAllText(LogFile(folder));
+            Check("log: the user's profile folder is replaced", stored.Contains("%USERPROFILE%\\AppData\\x") && stored.IndexOf(profile, StringComparison.OrdinalIgnoreCase) < 0, null);
+
+            string blocker = Path.Combine(Temp("log9"), "file");
+            File.WriteAllText(blocker, "x");
+            bool threw = false;
+            try
+            {
+                AppLog.Start(Path.Combine(blocker, "sub"), "test");
+                AppLog.Write("a", "b");
+                AppLog.Flush();
+            }
+            catch (Exception) { threw = true; }
+            Check("log: a folder that cannot be created leaves no path and never throws", !threw && AppLog.FilePath == null, null);
+
+            folder = Temp("log10");
+            RunLogProcesses(folder, 300);
+            lines = LogLines(LogFile(folder));
+            var seen = new HashSet<string>();
+            bool formatOk = true, duplicate = false;
+            var entry = new Regex(@"\[\d+ ([abcd])\] multi: ([abcd]) (\d+)$");
+            foreach (string line in lines)
+            {
+                Match m = entry.Match(line);
+                if (!Regex.IsMatch(line, LineFormat) || !m.Success || m.Groups[1].Value != m.Groups[2].Value) { formatOk = false; continue; }
+                if (!seen.Add(m.Groups[2].Value + " " + m.Groups[3].Value)) duplicate = true;
+            }
+            Check("log: four processes writing at once lose and tear nothing (1200 entries, each once)", lines.Length == 1200 && seen.Count == 1200 && formatOk && !duplicate,
+                lines.Length + " lines, " + seen.Count + " distinct");
+
+            folder = Temp("log11");
+            RunLogProcesses(folder, 4000);
+            string[] now2 = LogLines(LogFile(folder)), old2 = LogLines(Path.Combine(folder, "Logs", "helper.1.log"));
+            bool allMatch = true, anyDuplicate = false;
+            var all = new HashSet<string>();
+            foreach (string line in now2.Concat2(old2))
+            {
+                Match m = entry.Match(line);
+                if (!Regex.IsMatch(line, LineFormat) || !m.Success || m.Groups[1].Value != m.Groups[2].Value) { allMatch = false; continue; }
+                if (!all.Add(m.Groups[2].Value + " " + m.Groups[3].Value)) anyDuplicate = true;
+            }
+            long size = new FileInfo(LogFile(folder)).Length;
+            Check("log: four processes with rotation keep every line whole, nothing twice, helper.log near its limit",
+                allMatch && !anyDuplicate && File.Exists(Path.Combine(folder, "Logs", "helper.1.log")) && size <= AppLog.MaxBytes + 64 * 1024,
+                now2.Length + " + " + old2.Length + " lines, helper.log " + size + " bytes");
+        }
+        finally { AppLog.Clock = realClock; }
+    }
+
+    private static IEnumerable<string> Concat2(this string[] a, string[] b)
+    {
+        foreach (string x in a) yield return x;
+        foreach (string x in b) yield return x;
+    }
+
+    private static void QuietCases()
+    {
+        bool nothing = true;
+        foreach (int state in new[] { 0, 1, 5, 6, 7 })
+            foreach (bool full in new[] { false, true })
+                foreach (bool app in new[] { false, true })
+                    if (QuietTime.Reason(state, full, app) != null) nothing = false;
+        Check("quiet: states 0, 1, 5, 6 and 7 never keep the animation away", nothing, null);
+        bool always = true;
+        foreach (int state in new[] { 3, 4 })
+            foreach (bool full in new[] { false, true })
+                foreach (bool app in new[] { false, true })
+                    if (QuietTime.Reason(state, full, app) == null) always = false;
+        Check("quiet: states 3 and 4 always do", always, null);
+        Check("quiet: state 2 only counts for a full-screen window of another program",
+            QuietTime.Reason(2, true, false) != null && QuietTime.Reason(2, true, true) == null &&
+            QuietTime.Reason(2, false, false) == null && QuietTime.Reason(2, false, true) == null, null);
+        Check("quiet: the three reason texts",
+            QuietTime.Reason(3, false, false) == "Windows reports a full-screen game in front" &&
+            QuietTime.Reason(4, false, false) == "Windows reports presentation mode" &&
+            QuietTime.Reason(2, true, false) == "a full-screen window of another program is in front", null);
+    }
+
+    private static void CrashPolicyCases()
+    {
+        DateTime now = new DateTime(2026, 1, 1, 12, 0, 0);
+        Check("crash: a normal start may restart", CrashPolicy.MayRestart(null, now), null);
+        Check("crash: a restart 1 second ago may not", !CrashPolicy.MayRestart(now.AddSeconds(-1), now), null);
+        Check("crash: a restart 9 min 59 s ago may not", !CrashPolicy.MayRestart(now.AddSeconds(-599), now), null);
+        Check("crash: a restart exactly 10 minutes ago may", CrashPolicy.MayRestart(now.AddMinutes(-10), now), null);
+        Check("crash: a restart 3 days ago may", CrashPolicy.MayRestart(now.AddDays(-3), now), null);
+        Check("crash: a restart time 5 minutes in the future may", CrashPolicy.MayRestart(now.AddMinutes(5), now), null);
+    }
+
+    private static void WriteZip(string path, Dictionary<string, byte[]> entries)
+    {
+        using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+            foreach (var pair in entries)
+            {
+                var entry = zip.CreateEntry(pair.Key);
+                using (var writer = new BinaryWriter(entry.Open())) writer.Write(pair.Value);
+            }
+    }
+
+    // A zip entry of <size> zero bytes: tiny in the archive, huge once uncompressed.
+    private static void WriteBigZipEntry(string path, string name, long size)
+    {
+        using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            var entry = zip.CreateEntry(name);
+            using (var s = entry.Open())
+            {
+                var zeros = new byte[1024 * 1024];
+                for (long left = size; left > 0; left -= zeros.Length)
+                    s.Write(zeros, 0, (int)Math.Min(zeros.Length, left));
+            }
+        }
+    }
+
+    private static bool SameBytes(string a, string b)
+    {
+        return File.Exists(a) && File.Exists(b) &&
+            Convert.ToBase64String(File.ReadAllBytes(a)) == Convert.ToBase64String(File.ReadAllBytes(b));
+    }
+
+    private static void PackCases()
+    {
+        string work = Temp("pack");
+        ThemeLibrary.RootOverride = Path.Combine(work, "Themes");
+        try
+        {
+            // A theme with a wallpaper, an avatar and a credit line.
+            string folder = ThemeLibrary.Folder("Harbor");
+            Directory.CreateDirectory(folder);
+            WriteJpeg(Path.Combine(folder, "wallpaper.jpg"), Color.Teal);
+            WriteJpeg(Path.Combine(folder, "avatar.jpg"), Color.Orange);
+            var themeIni = new IniFile();
+            themeIni.Set("opacity", "27");
+            themeIni.Set("title", "HARBOR");
+            themeIni.Set("credit", "art by Somebody, https://example.invalid/x");
+            themeIni.Set("themeOnlyKey", "travels");
+            themeIni.Save(Path.Combine(folder, "theme.ini"));
+            string simpler = ThemeLibrary.Folder("Plain");
+            Directory.CreateDirectory(simpler);
+            WriteJpeg(Path.Combine(simpler, "wallpaper.jpg"), Color.Gray);
+
+            string pack = Path.Combine(work, "harbor.altheme");
+            ThemePack.Export("Harbor", pack);
+            Check("export: the file is a zip", File.ReadAllBytes(pack).Length > 4 &&
+                File.ReadAllBytes(pack)[0] == 'P' && File.ReadAllBytes(pack)[1] == 'K', null);
+            var inside = new List<string>();
+            using (var zip = ZipFile.OpenRead(pack))
+                foreach (ZipArchiveEntry e in zip.Entries) inside.Add(e.FullName);
+            inside.Sort();
+            Check("export: manifest, theme.ini, wallpaper and avatar only",
+                string.Join("|", inside.ToArray()) == "avatar.jpg|manifest.ini|theme.ini|wallpaper.jpg", string.Join("|", inside.ToArray()));
+
+            byte[] wallBefore = File.ReadAllBytes(Path.Combine(folder, "wallpaper.jpg"));
+            byte[] avatarBefore = File.ReadAllBytes(Path.Combine(folder, "avatar.jpg"));
+            byte[] iniBefore = File.ReadAllBytes(Path.Combine(folder, "theme.ini"));
+            Directory.Delete(folder, true);
+
+            string imported = ThemePack.Import(pack);
+            string newFolder = ThemeLibrary.Folder(imported);
+            Check("import: a theme file restores under its manifest name", imported == "Harbor", imported);
+            Check("import: wallpaper.jpg is byte-identical",
+                Convert.ToBase64String(File.ReadAllBytes(Path.Combine(newFolder, "wallpaper.jpg"))) == Convert.ToBase64String(wallBefore), null);
+            Check("import: avatar.jpg is byte-identical",
+                Convert.ToBase64String(File.ReadAllBytes(Path.Combine(newFolder, "avatar.jpg"))) == Convert.ToBase64String(avatarBefore), null);
+            Check("import: theme.ini is byte-identical, credit and unknown keys survive",
+                Convert.ToBase64String(File.ReadAllBytes(Path.Combine(newFolder, "theme.ini"))) == Convert.ToBase64String(iniBefore) &&
+                SplashText.Read(IniFile.Load(Path.Combine(newFolder, "theme.ini"))).Credit == "art by Somebody, https://example.invalid/x", null);
+            Check("import: importing the same file again dedupes the name", ThemePack.Import(pack) == "Harbor 2", null);
+
+            // The name comes from the manifest, not the file name.
+            string renamedPack = Path.Combine(work, "something-else.altheme");
+            File.Copy(pack, renamedPack);
+            string manifestImport = ThemePack.Import(renamedPack);
+            Check("import: the manifest name wins over the file name", manifestImport.StartsWith("Harbor"), manifestImport);
+
+            bool refused = false;
+            string notZip = Path.Combine(work, "notes.altheme");
+            File.WriteAllText(notZip, "definitely not a zip");
+            try { ThemePack.Import(notZip); } catch (InvalidDataException) { refused = true; }
+            Check("import: a file that is not a zip is refused", refused && ThemeLibrary.Names().Length == 4, null);
+
+            refused = false;
+            string noWall = Path.Combine(work, "nowall.altheme");
+            WriteZip(noWall, new Dictionary<string, byte[]> { { "theme.ini", iniBefore } });
+            try { ThemePack.Import(noWall); } catch (InvalidDataException) { refused = true; }
+            Check("import: a zip without wallpaper.jpg is refused", refused && !Directory.Exists(ThemeLibrary.Folder("nowall")), null);
+
+            refused = false;
+            string damaged = Path.Combine(work, "damaged.altheme");
+            var damagedWall = new byte[200];
+            new Random(3).NextBytes(damagedWall);
+            WriteZip(damaged, new Dictionary<string, byte[]> { { "wallpaper.jpg", damagedWall } });
+            try { ThemePack.Import(damaged); } catch (InvalidDataException) { refused = true; }
+            Check("import: an image that cannot be decoded is refused and leaves no folder",
+                refused && ThemeLibrary.Names().Length == 4, null);
+
+            refused = false;
+            string huge = Path.Combine(work, "huge.altheme");
+            WriteBigZipEntry(huge, "wallpaper.jpg", 129L * 1024 * 1024);
+            try { ThemePack.Import(huge); } catch (InvalidDataException) { refused = true; }
+            Check("import: an entry over 128 MiB is refused before it is read", refused, null);
+
+            string hostile = Path.Combine(work, "hostile.altheme");
+            WriteZip(hostile, new Dictionary<string, byte[]> {
+                { "wallpaper.jpg", wallBefore },
+                { "../evil.txt", new byte[] { 65 } },
+                { "sub/evil.exe", new byte[] { 66 } },
+                { "wallpaper.jpg.exe", new byte[] { 67 } },
+                { "manifest.ini", new UTF8Encoding(false).GetBytes("name=Hostile Take\r\n") }
+            });
+            string hostileName = ThemePack.Import(hostile);
+            string[] landed = Directory.GetFiles(ThemeLibrary.Folder(hostileName));
+            Check("import: only the known files land, hostile entries are ignored",
+                hostileName == "Hostile Take" && landed.Length == 1 && Path.GetFileName(landed[0]) == "wallpaper.jpg" &&
+                !File.Exists(Path.Combine(work, "evil.txt")) && !File.Exists(Path.Combine(ThemeLibrary.Root, "..", "evil.txt")),
+                hostileName + " -> " + landed.Length + " file(s)");
+
+            string dup = ThemeLibrary.Duplicate("Harbor");
+            string dup2 = ThemeLibrary.Duplicate("Harbor");
+            Check("duplicate: X becomes X copy then X copy 2", dup == "Harbor copy" && dup2 == "Harbor copy 2", dup + " | " + dup2);
+            Check("duplicate: files are identical",
+                SameBytes(Path.Combine(ThemeLibrary.Folder(dup), "wallpaper.jpg"), Path.Combine(ThemeLibrary.Folder("Harbor"), "wallpaper.jpg")) &&
+                SameBytes(Path.Combine(ThemeLibrary.Folder(dup), "theme.ini"), Path.Combine(ThemeLibrary.Folder("Harbor"), "theme.ini")), null);
+
+            int before = ThemeLibrary.Names().Length;
+            string backup = Path.Combine(work, "library.albackup");
+            ThemePack.Backup(backup);
+            foreach (string name in ThemeLibrary.Names()) Directory.Delete(ThemeLibrary.Folder(name), true);
+            int restored = ThemePack.Restore(backup);
+            Check("backup: restores every theme", restored == before && ThemeLibrary.Names().Length == before,
+                restored + " of " + before);
+            Check("backup: restored files are byte-identical",
+                Convert.ToBase64String(File.ReadAllBytes(Path.Combine(ThemeLibrary.Folder("Harbor"), "wallpaper.jpg"))) == Convert.ToBase64String(wallBefore) &&
+                SplashText.Read(IniFile.Load(Path.Combine(ThemeLibrary.Folder("Harbor"), "theme.ini"))).Credit.StartsWith("art by"), null);
+        }
+        finally { ThemeLibrary.RootOverride = null; }
     }
 
     private static int Sheets()

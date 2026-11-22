@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32;
 
 // key=value settings file: UTF-8 without BOM, CRLF, keys case-insensitive,
 // unknown keys kept on save.
@@ -25,12 +28,18 @@ internal sealed class IniFile
     // A missing file is empty; a file that exists but cannot be read throws.
     internal static IniFile LoadStrict(string path)
     {
-        var ini = new IniFile();
-        if (!File.Exists(path)) return ini;
+        if (!File.Exists(path)) return new IniFile();
         string text;
         using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
         using (var reader = new StreamReader(file, new UTF8Encoding(false), true))
             text = reader.ReadToEnd();
+        return Parse(text);
+    }
+
+    // The same key=value rules applied to text already in memory.
+    internal static IniFile Parse(string text)
+    {
+        var ini = new IniFile();
         foreach (string raw in text.Split('\n'))
         {
             string line = raw.TrimEnd('\r');
@@ -51,6 +60,9 @@ internal sealed class IniFile
         return values.TryGetValue(key, out value) ? value : null;
     }
 
+    // The keys in file order.
+    internal string[] Keys { get { return order.ToArray(); } }
+
     internal void Set(string key, string value)
     {
         if (value == null)
@@ -63,26 +75,51 @@ internal sealed class IniFile
         values[key] = value;
     }
 
-    internal void Save(string path)
+    internal string Render()
     {
         var text = new StringBuilder();
         foreach (string key in order) text.Append(key).Append('=').Append(values[key]).Append("\r\n");
-        ImageCodec.SaveAtomic(path, new UTF8Encoding(false).GetBytes(text.ToString()));
+        return text.ToString();
+    }
+
+    internal void Save(string path)
+    {
+        ImageCodec.SaveAtomic(path, new UTF8Encoding(false).GetBytes(Render()));
     }
 }
 
 internal sealed class Look
 {
     internal static readonly Color DefaultTint = Color.FromArgb(0x8C, 0x66, 0xD1);
-    internal int Opacity = 15, Blur, Dim, Tint, FocusX = 50, FocusY = 50;
+    internal int Opacity = 15, Blur, Dim, Tint, FocusX = 50, FocusY = 50, Clear, Glow, Vignette;
+    internal int Sat = 100, Fade;
+    internal string ClearSide = "", Fit = "cover";
     internal Color TintColor = DefaultTint;
 
     internal byte Alpha { get { return (byte)Math.Round(255 * Opacity / 100.0, MidpointRounding.AwayFromZero); } }
 
+    internal Look Copy()
+    {
+        var look = new Look();
+        look.Opacity = Opacity; look.Blur = Blur; look.Dim = Dim; look.Tint = Tint;
+        look.FocusX = FocusX; look.FocusY = FocusY; look.Clear = Clear; look.Glow = Glow;
+        look.Vignette = Vignette; look.Sat = Sat; look.Fade = Fade;
+        look.ClearSide = ClearSide; look.Fit = Fit; look.TintColor = TintColor;
+        return look;
+    }
+
     internal bool SameRender(Look other)
     {
-        return Blur == other.Blur && Dim == other.Dim && Tint == other.Tint &&
-            TintColor.ToArgb() == other.TintColor.ToArgb();
+        return Blur == other.Blur && Dim == other.Dim && Tint == other.Tint && Sat == other.Sat &&
+            Fade == other.Fade && TintColor.ToArgb() == other.TintColor.ToArgb();
+    }
+
+    // Fields applied at present time inside the app window, not to the source image.
+    internal bool SamePresent(Look other)
+    {
+        return Opacity == other.Opacity && FocusX == other.FocusX && FocusY == other.FocusY &&
+            Clear == other.Clear && Glow == other.Glow && Vignette == other.Vignette &&
+            ClearSide == other.ClearSide && Fit == other.Fit;
     }
 
     internal static Look Read(IniFile ini)
@@ -94,6 +131,15 @@ internal sealed class Look
         look.Tint = Number(ini, "tint", 0, 0, 100);
         look.FocusX = Number(ini, "focusX", 50, 0, 100);
         look.FocusY = Number(ini, "focusY", 50, 0, 100);
+        look.Clear = Number(ini, "clear", 0, 0, 100);
+        look.Glow = Number(ini, "glow", 0, 0, 100);
+        look.Vignette = Number(ini, "vignette", 0, 0, 100);
+        look.Sat = Number(ini, "sat", 100, 0, 150);
+        look.Fade = Number(ini, "fade", 0, 0, 100);
+        string side = (ini.Get("clearSide") ?? "").Trim().ToLowerInvariant();
+        look.ClearSide = side == "left" || side == "right" || side == "center" ? side : "";
+        string fit = (ini.Get("fit") ?? "").Trim().ToLowerInvariant();
+        look.Fit = fit == "contain" || fit == "center" || fit == "pixel" ? fit : "cover";
         Color color;
         look.TintColor = SplashText.TryParseColor(ini.Get("tintColor"), out color) ? color : DefaultTint;
         return look;
@@ -108,6 +154,13 @@ internal sealed class Look
         ini.Set("tintColor", string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", TintColor.R, TintColor.G, TintColor.B));
         ini.Set("focusX", FocusX.ToString(CultureInfo.InvariantCulture));
         ini.Set("focusY", FocusY.ToString(CultureInfo.InvariantCulture));
+        ini.Set("clear", Clear.ToString(CultureInfo.InvariantCulture));
+        ini.Set("clearSide", ClearSide ?? "");
+        ini.Set("glow", Glow.ToString(CultureInfo.InvariantCulture));
+        ini.Set("vignette", Vignette.ToString(CultureInfo.InvariantCulture));
+        ini.Set("sat", Sat.ToString(CultureInfo.InvariantCulture));
+        ini.Set("fade", Fade.ToString(CultureInfo.InvariantCulture));
+        ini.Set("fit", Fit ?? "cover");
     }
 
     internal static int Number(IniFile ini, string key, int fallback, int min, int max)
@@ -120,26 +173,71 @@ internal sealed class Look
 
 internal sealed class SplashText
 {
-    internal string Title = "", Subtitle = "", Accent = "";
-    internal string[] Logs = new string[0];
+    internal string Title = "", Subtitle = "", Accent = "", Credit = "", Style = "", Font = "", Frame = "";
+    internal string[] Logs = new string[0], Lines = new string[0];
+
+    // "full" | "short" | "terminal" | "manga" | "minimal"; anything else means the
+    // theme does not pick a style and the app's own default applies.
+    internal static string NormalizeStyle(string style)
+    {
+        switch ((style ?? "").Trim().ToLowerInvariant())
+        {
+            case "full": case "short": case "terminal": case "manga": case "minimal":
+                return style.Trim().ToLowerInvariant();
+            default: return "";
+        }
+    }
+
+    // The title font is a name from the whitelist of fonts Windows always has;
+    // "" keeps the original SimSun serif look.
+    internal static string NormalizeFont(string font)
+    {
+        switch ((font ?? "").Trim().ToLowerInvariant())
+        {
+            case "segoe": case "mono": case "serif": case "gothic": case "type": case "impact":
+                return font.Trim().ToLowerInvariant();
+            default: return "";
+        }
+    }
+
+    // The avatar frame shape; "" is the corner-notch square the animation shipped with.
+    internal static string NormalizeFrame(string frame)
+    {
+        switch ((frame ?? "").Trim().ToLowerInvariant())
+        {
+            case "round": case "circle": case "diamond": case "hex":
+                return frame.Trim().ToLowerInvariant();
+            default: return "";
+        }
+    }
+
+    private static string[] ReadLines(IniFile ini, string key, int max)
+    {
+        var lines = new List<string>();
+        string joined = ini.Get(key);
+        if (!string.IsNullOrEmpty(joined))
+            foreach (string part in joined.Split('|'))
+            {
+                string line = Limit(part, 80);
+                if (line.Length > 0 && lines.Count < max) lines.Add(line);
+            }
+        return lines.ToArray();
+    }
 
     internal static SplashText Read(IniFile ini)
     {
         var text = new SplashText();
         text.Title = Limit(ini.Get("title"), 40);
         text.Subtitle = Limit(ini.Get("subtitle"), 60);
+        text.Credit = Limit(ini.Get("credit"), 80);
+        text.Style = NormalizeStyle(ini.Get("style"));
+        text.Font = NormalizeFont(ini.Get("font"));
+        text.Frame = NormalizeFrame(ini.Get("frame"));
         Color color;
         text.Accent = TryParseColor(ini.Get("accent"), out color)
             ? string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B) : "";
-        var logs = new List<string>();
-        string joined = ini.Get("logs");
-        if (!string.IsNullOrEmpty(joined))
-            foreach (string part in joined.Split('|'))
-            {
-                string line = Limit(part, 80);
-                if (line.Length > 0 && logs.Count < 4) logs.Add(line);
-            }
-        text.Logs = logs.ToArray();
+        text.Logs = ReadLines(ini, "logs", 4);
+        text.Lines = ReadLines(ini, "lines", 16);
         return text;
     }
 
@@ -148,14 +246,24 @@ internal sealed class SplashText
         ini.Set("title", Limit(Title, 40));
         ini.Set("subtitle", Limit(Subtitle, 60));
         ini.Set("accent", Accent ?? "");
-        var logs = new List<string>();
-        if (Logs != null)
-            foreach (string log in Logs)
+        ini.Set("logs", JoinLines(Logs, 4));
+        ini.Set("lines", JoinLines(Lines, 16));
+        ini.Set("credit", Limit(Credit, 80));
+        ini.Set("style", NormalizeStyle(Style));
+        ini.Set("font", NormalizeFont(Font));
+        ini.Set("frame", NormalizeFrame(Frame));
+    }
+
+    private static string JoinLines(string[] values, int max)
+    {
+        var lines = new List<string>();
+        if (values != null)
+            foreach (string value in values)
             {
-                string line = Limit((log ?? "").Replace("|", " "), 80);
-                if (line.Length > 0 && logs.Count < 4) logs.Add(line);
+                string line = Limit((value ?? "").Replace("|", " "), 80);
+                if (line.Length > 0 && lines.Count < max) lines.Add(line);
             }
-        ini.Set("logs", string.Join("|", logs.ToArray()));
+        return string.Join("|", lines.ToArray());
     }
 
     // Strict #RRGGBB.
@@ -190,7 +298,33 @@ internal sealed class AppProfile
     internal Look Look = new Look();
     internal SplashText Text = new SplashText();
     internal bool SplashOnStart = true;
+    internal bool Watch = true;
     internal int Speed = 1;
+    // The app's effective animation style ("full" or "short"). A theme's own style
+    // replaces it when the theme is applied or saved; this is the per-app default.
+    internal string Style = "full";
+    // When on, the animation plays only on the first app start after sign-in.
+    internal bool SplashOnce = false;
+    // Theme variety: "off", "start" or a number of minutes between switches.
+    internal string Rotate = "off";
+    // When on, rotation picks only from the studio's favorites list.
+    internal bool RotateFavs = false;
+    // When on, theme= is the dark pick and themeLight= shows in Windows light mode.
+    internal bool FollowWindows = false;
+    internal string ThemeLight = "";
+    // A third slot: themeNight= shows inside the night window nightStart..nightUntil
+    // (wraps midnight). Empty = no night theme.
+    internal string ThemeNight = "";
+    internal int NightStart = 20, NightUntil = 7;
+    // Added to the theme's dim at night, and to it all the time (0..80).
+    internal int NightDim = 0, ExtraDim = 0;
+    // Hide the artwork while the app covers its monitor or Windows reports
+    // presentation mode.
+    internal bool HideFullscreen = true;
+    // The theme whose files are actually in the folder right now. Normally equal to
+    // Theme (or ThemeLight/ThemeNight while that mode is active); "" means the folder
+    // was not populated through ApplyForMode.
+    internal string Applied = "";
 
     private AppProfile(string root) { Root = root; }
 
@@ -206,8 +340,35 @@ internal sealed class AppProfile
         profile.Look = Look.Read(ini);
         profile.Text = SplashText.Read(ini);
         profile.SplashOnStart = !string.Equals((ini.Get("splash") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
-        profile.Speed = (ini.Get("speed") ?? "").Trim() == "2" ? 2 : 1;
+        profile.Watch = !string.Equals((ini.Get("watch") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
+        profile.Speed = Look.Number(ini, "speed", 1, 1, 3);
+        string style = SplashText.NormalizeStyle(ini.Get("style"));
+        profile.Style = style.Length > 0 ? style : "full";
+        profile.SplashOnce = string.Equals((ini.Get("once") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.Rotate = NormalizeRotate(ini.Get("rotate"));
+        profile.RotateFavs = string.Equals((ini.Get("rotateFavs") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.FollowWindows = string.Equals((ini.Get("followWindows") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.ThemeLight = (ini.Get("themeLight") ?? "").Trim();
+        profile.ThemeNight = (ini.Get("themeNight") ?? "").Trim();
+        profile.NightStart = Look.Number(ini, "nightStart", 20, 0, 23);
+        profile.NightUntil = Look.Number(ini, "nightUntil", 7, 0, 23);
+        profile.NightDim = Look.Number(ini, "nightDim", 0, 0, 80);
+        profile.ExtraDim = Look.Number(ini, "extraDim", 0, 0, 80);
+        profile.HideFullscreen = !string.Equals((ini.Get("hideFullscreen") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
+        profile.Applied = (ini.Get("applied") ?? "").Trim();
         return profile;
+    }
+
+    // "off" | "start" | whole minutes (5..1440) as text.
+    internal static string NormalizeRotate(string value)
+    {
+        string raw = (value ?? "").Trim().ToLowerInvariant();
+        if (raw == "start") return "start";
+        int minutes;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out minutes) &&
+            minutes >= 5 && minutes <= 1440)
+            return minutes.ToString(CultureInfo.InvariantCulture);
+        return "off";
     }
 
     internal void Save()
@@ -219,254 +380,118 @@ internal sealed class AppProfile
             Look.Write(ini);
             Text.Write(ini);
             ini.Set("splash", SplashOnStart ? "on" : "off");
-            ini.Set("speed", Speed == 2 ? "2" : "1");
+            ini.Set("watch", Watch ? "on" : "off");
+            ini.Set("speed", Math.Max(1, Math.Min(3, Speed)).ToString(CultureInfo.InvariantCulture));
+            // The effective style lives on the same key the theme's choice uses; the
+            // app's resolved value wins over the copied theme text's own write.
+            ini.Set("style", SplashText.NormalizeStyle(Style).Length > 0 ? Style : "full");
+            ini.Set("once", SplashOnce ? "on" : "off");
+            ini.Set("rotate", NormalizeRotate(Rotate));
+            ini.Set("rotateFavs", RotateFavs ? "on" : "off");
+            ini.Set("followWindows", FollowWindows ? "on" : "off");
+            ini.Set("themeLight", ThemeLight ?? "");
+            ini.Set("themeNight", ThemeNight ?? "");
+            ini.Set("nightStart", Math.Max(0, Math.Min(23, NightStart)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("nightUntil", Math.Max(0, Math.Min(23, NightUntil)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("nightDim", Math.Max(0, Math.Min(80, NightDim)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("extraDim", Math.Max(0, Math.Min(80, ExtraDim)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("hideFullscreen", HideFullscreen ? "on" : "off");
+            ini.Set("applied", Applied ?? "");
             ini.Save(path);
         });
     }
 }
 
-internal static class ThemeLibrary
+// Whether Windows apps are currently in light mode (Personalize key; absent or
+// 0 means dark). Never throws — a registry problem simply means dark.
+internal static class WindowsTheme
 {
-    internal static string RootOverride = null;
-
-    internal static string SharedRoot
+    internal static bool IsLight()
     {
-        get
-        {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Animated Launchers");
-        }
-    }
-
-    internal static string Root { get { return RootOverride ?? Path.Combine(SharedRoot, "Themes"); } }
-
-    internal static string[] Names()
-    {
-        var names = new List<string>();
+        // Test switch: 1 forces light, 0 forces dark, anything else reads the key.
+        string forced = Environment.GetEnvironmentVariable("ANIMATED_LIGHT");
+        if (forced == "1") return true;
+        if (forced == "0") return false;
         try
         {
-            foreach (string directory in Directory.GetDirectories(Root))
-                if (File.Exists(Path.Combine(directory, "wallpaper.jpg"))) names.Add(Path.GetFileName(directory));
+            object value = Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "AppsUseLightTheme", 0);
+            return value is int && (int)value != 0;
         }
-        catch (DirectoryNotFoundException) { }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        names.Sort(StringComparer.OrdinalIgnoreCase);
-        return names.ToArray();
-    }
-
-    internal static string Folder(string name) { return Path.Combine(Root, name); }
-
-    // Copies the theme's images into the app folder, then replaces the app's look
-    // and splash text with the theme's. Images first, settings.ini last.
-    internal static void Apply(string name, string appRoot)
-    {
-        if (string.IsNullOrWhiteSpace(name) || name == "." || name == ".." ||
-            name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            throw new ArgumentException("The theme name is not valid.");
-        string folder = Folder(name);
-        string wallpaper = Path.Combine(folder, "wallpaper.jpg");
-        if (!File.Exists(wallpaper)) throw new FileNotFoundException("The theme \"" + name + "\" has no wallpaper.", wallpaper);
-        WithLock(appRoot, delegate {
-            ImageCodec.SaveAtomic(Path.Combine(appRoot, "wallpaper.jpg"), ImageCodec.ReadBytes(wallpaper));
-            string avatar = Path.Combine(folder, "avatar.jpg");
-            string appAvatar = Path.Combine(appRoot, "avatar.jpg");
-            if (File.Exists(avatar)) ImageCodec.SaveAtomic(appAvatar, ImageCodec.ReadBytes(avatar));
-            else File.Delete(appAvatar);
-            IniFile theme = IniFile.Load(Path.Combine(folder, "theme.ini"));
-            AppProfile profile = AppProfile.Load(appRoot);
-            profile.Look = Look.Read(theme);
-            profile.Text = SplashText.Read(theme);
-            profile.Theme = name;
-            profile.Save();
-        });
-    }
-
-    private static readonly string[] ReservedNames = {
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
-
-    // The trimmed name, or an ArgumentException saying what to change.
-    internal static string ValidateName(string name)
-    {
-        name = (name ?? "").Trim();
-        if (name.Length == 0) throw new ArgumentException("Enter a name.");
-        if (name.Length > 60) throw new ArgumentException("Use 60 characters or fewer.");
-        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            throw new ArgumentException("A name can't contain \\ / : * ? \" < > |.");
-        if (name.EndsWith(".", StringComparison.Ordinal)) throw new ArgumentException("A name can't end with a dot.");
-        string stem = name.Split('.')[0].TrimEnd();
-        if (Array.IndexOf(ReservedNames, stem.ToUpperInvariant()) >= 0)
-            throw new ArgumentException("\"" + stem + "\" is reserved by Windows. Use another name.");
-        return name;
-    }
-
-    // The library folder name that equals the given text exactly, or null.
-    internal static string Exact(string name)
-    {
-        if (name == null) return null;
-        foreach (string existing in Names()) if (string.Equals(existing, name, StringComparison.Ordinal)) return existing;
-        return null;
-    }
-
-    internal static bool UsesTheme(string root, string name)
-    {
-        return string.Equals(AppProfile.Load(root).Theme, name, StringComparison.OrdinalIgnoreCase);
-    }
-
-    // Writes theme.ini (clamped, accent made legible) and copies look and text into every app on this theme.
-    internal static Look Save(string name, Look look, SplashText text, IEnumerable<string> appRoots, out SplashText stored)
-    {
-        string exact = Exact(name);
-        if (exact == null) throw new FileNotFoundException("The theme \"" + name + "\" no longer exists.");
-        string path = Path.Combine(Folder(exact), "theme.ini");
-        Look clamped = null;
-        SplashText normalized = null;
-        WithLock(Folder(exact), delegate {
-            IniFile ini = IniFile.LoadStrict(path);
-            look.Write(ini);
-            clamped = Look.Read(ini);
-            clamped.Write(ini);
-            text.Write(ini);
-            normalized = SplashText.Read(ini);
-            Color accent;
-            if (SplashText.TryParseColor(normalized.Accent, out accent))
-            {
-                Color legible = ArtworkLook.Legible(accent);
-                normalized.Accent = string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", legible.R, legible.G, legible.B);
-            }
-            normalized.Write(ini);
-            ini.Save(path);
-        });
-        foreach (string root in appRoots)
+        catch (Exception error)
         {
-            if (!UsesTheme(root, exact)) continue;
-            AppProfile profile = AppProfile.LoadStrict(root);
-            profile.Look = clamped;
-            profile.Text = normalized;
-            profile.Save();
+            if (!(error is IOException || error is UnauthorizedAccessException ||
+                error is System.Security.SecurityException)) throw;
+            return false;
         }
-        stored = normalized;
-        return clamped;
     }
+}
 
-    // Renames the folder (a case-only change goes through a temporary name) and fixes theme= in apps.
-    internal static string Rename(string name, string newName, IEnumerable<string> appRoots)
-    {
-        string exact = Exact(name);
-        if (exact == null) throw new FileNotFoundException("The theme \"" + name + "\" no longer exists.");
-        newName = ValidateName(newName);
-        if (string.Equals(exact, newName, StringComparison.Ordinal)) return exact;
-        bool caseOnly = string.Equals(exact, newName, StringComparison.OrdinalIgnoreCase);
-        if (!caseOnly && Directory.Exists(Folder(newName)))
-            throw new IOException("A theme called \"" + newName + "\" already exists.");
-        if (caseOnly)
-        {
-            string temporary = Folder(exact) + ".rename-" + Guid.NewGuid().ToString("N");
-            Directory.Move(Folder(exact), temporary);
-            Directory.Move(temporary, Folder(newName));
-        }
-        else Directory.Move(Folder(exact), Folder(newName));
-        foreach (string root in appRoots)
-        {
-            if (!UsesTheme(root, exact)) continue;
-            AppProfile profile = AppProfile.LoadStrict(root);
-            profile.Theme = newName;
-            profile.Save();
-        }
-        return newName;
-    }
+// Remembers which sign-in session already had its animation, for "once" mode.
+// The marker is the earliest explorer.exe start time (sign-in opens the shell),
+// falling back to boot time. Each app keeps its own signin.stamp file.
+internal static class SplashMemory
+{
+    internal const string StampName = "signin.stamp";
+    private static string marker;
 
-    // Imports a picture as a new theme named after the file; returns the folder name.
-    internal static string Create(string imagePath)
+    internal static string SignInMarker()
     {
-        byte[] jpeg = ImageCodec.ToJpeg(imagePath);
-        Color suggestion = Color.Empty;
-        using (Bitmap decoded = ImageCodec.DecodeJpeg(jpeg))
-        {
-            Color[] accents = ArtworkLook.SuggestAccents(decoded, 1);
-            if (accents.Length > 0) suggestion = accents[0];
-        }
-        string baseName = CleanName(Path.GetFileNameWithoutExtension(imagePath));
-        string name = baseName;
-        for (int n = 2; Directory.Exists(Folder(name)); n++)
-        {
-            string suffix = " " + n.ToString(CultureInfo.InvariantCulture);
-            name = (baseName.Length + suffix.Length > 60 ? baseName.Substring(0, 60 - suffix.Length).TrimEnd() : baseName) + suffix;
-        }
-        string folder = Folder(name);
+        if (marker != null) return marker;
+        DateTime signIn = DateTime.MinValue;
         try
         {
-            Directory.CreateDirectory(folder);
-            ImageCodec.SaveAtomic(Path.Combine(folder, "wallpaper.jpg"), jpeg);
-            var ini = new IniFile();
-            new Look().Write(ini);
-            var text = new SplashText();
-            string title = name.ToUpperInvariant();
-            text.Title = title.Length > 40 ? title.Substring(0, 40) : title;
-            Color accent = suggestion.IsEmpty ? Color.FromArgb(0xD9, 0x80, 0xA7) : ArtworkLook.Legible(suggestion);
-            text.Accent = string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", accent.R, accent.G, accent.B);
-            text.Write(ini);
-            ini.Save(Path.Combine(folder, "theme.ini"));
-        }
-        catch
-        {
-            try { Directory.Delete(folder, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-            throw;
-        }
-        return name;
-    }
-
-    private static string CleanName(string raw)
-    {
-        var chars = new StringBuilder();
-        foreach (char c in raw ?? "")
-            chars.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), c) >= 0 ? ' ' : c);
-        string name = string.Join(" ", chars.ToString().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)).Trim().TrimEnd('.', ' ');
-        if (name.Length > 60) name = name.Substring(0, 60).TrimEnd('.', ' ');
-        try { return ValidateName(name); }
-        catch (ArgumentException) { return "New theme"; }
-    }
-
-    // Empties theme= in every app that used the theme; their own copies keep working.
-    internal static void ClearReferences(string name, IEnumerable<string> appRoots)
-    {
-        foreach (string root in appRoots)
-        {
-            if (!UsesTheme(root, name)) continue;
-            AppProfile profile = AppProfile.LoadStrict(root);
-            profile.Theme = "";
-            profile.Save();
-        }
-    }
-
-    // Wallpaper and avatar write times and sizes combined; changes whenever either image does.
-    internal static string Stamp(string name)
-    {
-        long value = 17;
-        foreach (string file in new[] { "wallpaper.jpg", "avatar.jpg" })
-        {
-            var info = new FileInfo(Path.Combine(Folder(name), file));
-            value = value * 31 + (info.Exists ? info.LastWriteTimeUtc.Ticks ^ info.Length : 0);
-        }
-        return (value & long.MaxValue).ToString("x", CultureInfo.InvariantCulture);
-    }
-
-    // Serializes everything that writes into one settings or theme folder, in every process.
-    internal static void WithLock(string folder, Action action)
-    {
-        string full = Path.GetFullPath(folder).TrimEnd('\\').ToUpperInvariant();
-        string id;
-        using (var sha = SHA1.Create())
-            id = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(full))).Replace("-", "").Substring(0, 16);
-        using (var mutex = new Mutex(false, @"Local\AnimatedLaunchers.Files." + id))
-        {
-            try
+            foreach (Process process in Process.GetProcessesByName("explorer"))
             {
-                if (!mutex.WaitOne(TimeSpan.FromSeconds(5)))
-                    throw new IOException("Another settings update is still in progress. Try again.");
+                try
+                {
+                    DateTime started = process.StartTime;
+                    if (signIn == DateTime.MinValue || started < signIn) signIn = started;
+                }
+                catch (Exception) { }
             }
-            catch (AbandonedMutexException) { } // The previous process exited while it held the lock.
-            try { action(); } finally { mutex.ReleaseMutex(); }
         }
+        catch (Exception) { }
+        if (signIn == DateTime.MinValue)
+            signIn = DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount);
+        marker = signIn.ToString("o", CultureInfo.InvariantCulture);
+        return marker;
+    }
+
+    // True when the stamp already matches this sign-in; otherwise writes it.
+    internal static bool PlayedOrMark(string root)
+    {
+        string value = SignInMarker();
+        string path = Path.Combine(root, StampName);
+        try
+        {
+            if (File.Exists(path) && File.ReadAllText(path).Trim() == value) return true;
+            File.WriteAllText(path, value);
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    // plays.stamp counts how many times the animation really started for this app —
+    // previews never touch it. Powers the {starts} boot-line variable.
+    internal static int Plays(string root)
+    {
+        try
+        {
+            string path = Path.Combine(root, "plays.stamp");
+            int count;
+            return File.Exists(path) && int.TryParse(File.ReadAllText(path).Trim(), out count)
+                ? Math.Max(0, count) : 0;
+        }
+        catch (Exception) { return 0; }
+    }
+
+    internal static int CountPlay(string root)
+    {
+        int count = Plays(root) + 1;
+        try { File.WriteAllText(Path.Combine(root, "plays.stamp"), count.ToString(CultureInfo.InvariantCulture)); }
+        catch (Exception) { }
+        return count;
     }
 }

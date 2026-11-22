@@ -1,0 +1,71 @@
+name: Bug report
+description: Something does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The status report below usually tells us what went wrong.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Theme Studio
+        2. ...
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which app?
+      options:
+        - Devin
+        - Antigravity IDE
+        - Codex
+        - Claude
+        - VS Code
+        - Cursor
+        - Kiro
+        - Windsurf
+        - VSCodium
+        - Obsidian
+        - An app I added myself
+        - Theme Studio
+        - Installer or uninstaller
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Animated Launchers version
+      description: Theme Studio shows it under Settings.
+      placeholder: "3.0.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Press Win+R, type winver and press Enter.
+      placeholder: "Windows 11 24H2 (build 26100)"
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Status report
+      description: >-
+        In Theme Studio open Settings, click Copy report and paste it here. It holds each app's
+        status and the end of the helper logs. The logs never contain window titles or file contents.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, a short screen recording, or other details.

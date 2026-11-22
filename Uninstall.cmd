@@ -1,3 +1,4 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Uninstall.ps1" %*
-pause
+set "HERE=%~dp0"
+cd /d "%TEMP%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%Uninstall.ps1" %* & pause & exit /b

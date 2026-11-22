@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -10,6 +11,7 @@ using System.Runtime.InteropServices;
 internal static class ArtworkLook
 {
     private static readonly float[] Shade = { 8 / 255f, 20 / 255f, 29 / 255f };
+    private static readonly float[] FadeShade = { 245 / 255f, 245 / 255f, 245 / 255f };
 
     // src itself when the look changes no pixels (blur too small to matter, tint 0, dim 0);
     // otherwise a new 24bpp bitmap of the same size. The caller disposes it.
@@ -17,7 +19,7 @@ internal static class ArtworkLook
     {
         double sigma = Sigma(look.Blur, Math.Max(src.Width, src.Height));
         bool blur = sigma >= 0.3;
-        bool color = look.Tint > 0 || look.Dim > 0;
+        bool color = look.Tint > 0 || look.Dim > 0 || look.Fade > 0 || look.Sat != 100;
         if (!blur && !color) return src;
         Bitmap blurred = blur ? Blur(src, sigma) : null;
         if (!color) return blurred;
@@ -278,20 +280,27 @@ internal static class ArtworkLook
 
     private static Bitmap Colorize(Bitmap src, Look look)
     {
-        double t = look.Tint / 100.0, d = look.Dim / 100.0;
+        double t = look.Tint / 100.0, d = look.Dim / 100.0, f = look.Fade / 100.0;
+        double k = look.Sat / 100.0; // saturation: 0 grey, 1 unchanged, up to 1.5 vivid
         double[] tint = { look.TintColor.R / 255.0, look.TintColor.G / 255.0, look.TintColor.B / 255.0 };
         double[] luma = { 0.299, 0.587, 0.114 };
+        // out = in * (sat, then tint-blend) * (1-d)(1-f) + d*Shade + f*FadeShade
         var matrix = new float[5][];
         for (int i = 0; i < 5; i++) matrix[i] = new float[5];
         for (int i = 0; i < 3; i++)
         {
             for (int j = 0; j < 3; j++)
             {
-                double duotone = luma[i] * tint[j];
-                double mixed = (1 - t) * (i == j ? 1 : 0) + t * duotone;
-                matrix[i][j] = (float)((1 - d) * mixed);
+                double sum = 0;
+                for (int x = 0; x < 3; x++)
+                {
+                    double sat = (1 - k) * luma[i] + (i == x ? k : 0);
+                    double mx = (1 - t) * (x == j ? 1 : 0) + t * luma[x] * tint[j];
+                    sum += sat * mx;
+                }
+                matrix[i][j] = (float)((1 - d) * (1 - f) * sum);
             }
-            matrix[4][i] = (float)(d * Shade[i]);
+            matrix[4][i] = (float)(d * Shade[i] + f * FadeShade[i]);
         }
         matrix[3][3] = 1;
         matrix[4][4] = 1;
@@ -369,4 +378,175 @@ internal static class ArtworkLook
         double m = l - c / 2;
         return Color.FromArgb((int)Math.Round((r + m) * 255), (int)Math.Round((g + m) * 255), (int)Math.Round((b + m) * 255));
     }
+
+    // ---- Per-pixel transparency (clear zone + glow) ----
+    // The child window and the fallback window both present through
+    // UpdateLayeredWindow, which honours the alpha channel of a premultiplied
+    // 32bpp source (AC_SRC_ALPHA). ApplyAlpha prepares that source; callers
+    // present it with the blend's alpha-format flag set.
+
+    // Mean luminance (0-255) over the band where app text usually sits: the
+    // lower-left of the picture. Used by Theme Studio's readability hint.
+    internal static int TextZoneLuma(Bitmap bitmap)
+    {
+        int x0 = 0, x1 = Math.Max(1, (int)Math.Round(bitmap.Width * 0.55));
+        int y0 = Math.Min(bitmap.Height - 1, Math.Max(0, (int)Math.Round(bitmap.Height * 0.55))), y1 = bitmap.Height;
+        long total = 0;
+        int pixels = 0;
+        for (int y = y0; y < y1; y += 2)
+            for (int x = x0; x < x1; x += 2)
+            {
+                Color c = bitmap.GetPixel(x, y);
+                total += (int)Math.Round(c.R * 0.299 + c.G * 0.587 + c.B * 0.114);
+                pixels++;
+            }
+        return pixels == 0 ? 0 : (int)(total / pixels);
+    }
+
+    internal static bool NeedsAlpha(Look look)
+    {
+        return look != null && (look.Clear > 0 || look.Glow > 0 || look.Fit != "cover");
+    }
+
+    // Any reason to run the per-pixel pass: alpha work, vignette darkening, or a
+    // non-cover fit (transparent bars need the alpha path too).
+    internal static bool NeedsPixelPass(Look look)
+    {
+        return NeedsAlpha(look) || (look != null && look.Vignette > 0);
+    }
+
+    // The draw plan for a look fit: source crop, destination rect inside the
+    // frame, and the interpolation to use. Everything outside dst stays
+    // transparent in a 32bppArgb frame, so the app shows through the bars.
+    internal static void FramePlan(Size image, Size viewport, Look look,
+        out RectangleF src, out Rectangle dst, out InterpolationMode mode)
+    {
+        mode = InterpolationMode.HighQualityBicubic;
+        if (look == null || look.Fit == "cover")
+        {
+            src = CoverSource(image, viewport, look == null ? 50 : look.FocusX, look == null ? 50 : look.FocusY);
+            dst = new Rectangle(0, 0, viewport.Width, viewport.Height);
+            mode = InterpolationMode.Bilinear;
+            return;
+        }
+        if (look.Fit == "center")
+        {
+            int w = Math.Min(image.Width, viewport.Width), h = Math.Min(image.Height, viewport.Height);
+            src = new RectangleF((image.Width - w) / 2f, (image.Height - h) / 2f, w, h);
+            dst = new Rectangle((viewport.Width - w) / 2, (viewport.Height - h) / 2, w, h);
+            return;
+        }
+        // contain: whole image, aspect-fitted and centred; pixel: same with an
+        // integer scale and nearest neighbour for crisp pixel art.
+        double scale = Math.Min((double)viewport.Width / image.Width, (double)viewport.Height / image.Height);
+        if (look.Fit == "pixel")
+        {
+            if (scale > 1) scale = Math.Max(1, Math.Floor(scale));
+            mode = InterpolationMode.NearestNeighbor;
+        }
+        int cw = Math.Max(1, (int)Math.Round(image.Width * scale));
+        int ch = Math.Max(1, (int)Math.Round(image.Height * scale));
+        src = new RectangleF(0, 0, image.Width, image.Height);
+        dst = new Rectangle((viewport.Width - cw) / 2, (viewport.Height - ch) / 2, cw, ch);
+    }
+
+    // Per-column artwork opacity for the clear zone: the zone floor is
+    // 255*(1-clear), a smoothstep ramp reaches full 255 outside the zone.
+    internal static byte[] ClearColumns(int width, Look look)
+    {
+        if (width <= 0 || look == null || look.Clear <= 0 || look.ClearSide.Length == 0) return null;
+        var columns = new byte[width];
+        double keep = 1.0 - Math.Max(0, Math.Min(100, look.Clear)) / 100.0;
+        for (int x = 0; x < width; x++)
+        {
+            double n = width > 1 ? (double)x / (width - 1) : 0.5;
+            double t;
+            switch (look.ClearSide)
+            {
+                case "left":   t = n / 0.60; break;
+                case "right":  t = (1.0 - n) / 0.60; break;
+                case "center": t = (Math.Abs(n - 0.5) - 0.18) / 0.32; break;
+                default:       t = 1; break;
+            }
+            t = Math.Max(0, Math.Min(1, t));
+            t = t * t * (3 - 2 * t);
+            columns[x] = (byte)Math.Round(255 * (keep + (1 - keep) * t));
+        }
+        return columns;
+    }
+
+    // The frame pixels with the clear-zone column mask and the glow mask folded
+    // into the alpha channel, RGB premultiplied. Frame must be Format32bppArgb;
+    // the returned buffer is BGRA, top-down rows, stride = width*4.
+    internal static byte[] AlphaPixels(Bitmap frame, Look look)
+    {
+        byte[] columns = ClearColumns(frame.Width, look);
+        int glow = look == null ? 0 : Math.Max(0, Math.Min(100, look.Glow));
+        var rect = new Rectangle(0, 0, frame.Width, frame.Height);
+        BitmapData data = frame.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        byte[] px;
+        try
+        {
+            px = new byte[Math.Abs(data.Stride) * frame.Height];
+            Marshal.Copy(data.Scan0, px, 0, px.Length);
+        }
+        finally { frame.UnlockBits(data); }
+        int stride = frame.Width * 4;
+        int vig = look == null ? 0 : Math.Max(0, Math.Min(100, look.Vignette));
+        double w2 = Math.Max(1, frame.Width - 1) / 2.0, h2 = Math.Max(1, frame.Height - 1) / 2.0;
+        for (int y = 0; y < frame.Height; y++)
+        {
+            int row = y * stride;
+            double cy = (y - h2) / h2;
+            for (int x = 0; x < frame.Width; x++)
+            {
+                int i = row + (x << 2);
+                int a = columns != null ? columns[x] : 255;
+                a = (a * px[i + 3] + 127) / 255; // keep the bars of a fitted frame transparent
+                if (glow > 0)
+                {
+                    int luma = (px[i + 2] * 77 + px[i + 1] * 150 + px[i] * 29) >> 8;
+                    int ga = (luma * glow + 255 * (100 - glow) + 50) / 100;
+                    a = (a * ga + 127) / 255;
+                }
+                int dark = 255;
+                if (vig > 0)
+                {
+                    double cx = (x - w2) / w2;
+                    double q = Math.Sqrt(cx * cx + cy * cy) / 1.41421356; // 0 centre → 1 corner
+                    double e = Math.Max(0, Math.Min(1, (q - 0.55) / 0.45));
+                    e = e * e * (3 - 2 * e);
+                    dark = 255 - (int)Math.Round(vig * 255 * e / 100.0);
+                }
+                px[i]     = (byte)((px[i]     * dark * a + 32640) / 65025);
+                px[i + 1] = (byte)((px[i + 1] * dark * a + 32640) / 65025);
+                px[i + 2] = (byte)((px[i + 2] * dark * a + 32640) / 65025);
+                px[i + 3] = (byte)a;
+            }
+        }
+        return px;
+    }
+
+    // A 32bpp DIB section carrying the premultiplied pixels. UpdateLayeredWindow
+    // honours per-pixel alpha only from a real DIB; a device-dependent bitmap
+    // from Bitmap.GetHbitmap loses or mangles the channel. Delete with
+    // DeleteObject.
+    internal static IntPtr AlphaDib(byte[] px, int width, int height)
+    {
+        var info = new int[10];
+        info[0] = 40;              // BITMAPINFOHEADER size
+        info[1] = width;
+        info[2] = -height;         // negative: top-down rows, matching the buffer
+        info[3] = (32 << 16) | 1;  // bitCount 32, planes 1
+        IntPtr bits;
+        IntPtr dib = CreateDIBSection(IntPtr.Zero, info, 0, out bits, IntPtr.Zero, 0);
+        if (dib == IntPtr.Zero) throw new Win32Exception();
+        try { Marshal.Copy(px, 0, bits, width * height * 4); }
+        catch { DeleteObject(dib); throw; }
+        return dib;
+    }
+
+    [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateDIBSection(
+        IntPtr dc, int[] info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
 }
