@@ -4,9 +4,9 @@ All notable changes to Animated Launchers (released as Codex Animated). Versions
 [semantic versioning](https://semver.org/). Download releases from the
 [releases page](https://github.com/Synaap/Codex-Animated/releases).
 
-## 3.0.0 — unreleased
+## 3.0.0 — 2026-11-22
 
-Everything below is on `main` and ships together in 3.0.0.
+The first release under the Animated Launchers name: updates 1–18 from the roadmap, shipped together.
 
 ### Apps
 - **Ten built-in apps.** Devin, Antigravity IDE, Codex and Claude are joined by VS Code, Cursor, Kiro,
