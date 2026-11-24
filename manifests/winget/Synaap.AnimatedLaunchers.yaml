@@ -4,7 +4,7 @@
 # and ReleaseDate. Requires the signed Setup.exe — unsigned installers get
 # pulled by winget validation.
 PackageIdentifier: Synaap.AnimatedLaunchers
-PackageVersion: "3.2.0"
+PackageVersion: "3.3.0"
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.9.0

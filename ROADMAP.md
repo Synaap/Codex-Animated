@@ -117,9 +117,23 @@ Updates 1 to 18 are done on `main` and ship together in the next release. [CHANG
 - Optional startup chime (`sound.wav`) per theme
 - Animated GIF/APNG preview in Theme Studio, one-click app presets, and click-to-remove theme chips
 
+### 3.3.0 — Mouse pointers, wallpaper controls and a bug audit
+- A **Mouse pointers** tab in Theme Studio: pointer packs (drawn shapes and image packs) with live previews,
+  upload-your-own images, one-click apply as the real Windows cursor scheme, and **Windows default** restore
+- A drawn reticle that follows the cursor inside each app's window, per app, in the theme accent or a fixed colour
+- **Win+Alt+P** pause/resume for every animated wallpaper, **Win+Alt+Up/Down** visibility nudges,
+  and pause-while-unfocused per app
+- Slideshow crossfades, an in-Studio slideshow editor, and a startup-chime editor with three built-in chimes
+- Animated GIF/APNG/slideshow wallpapers under every look (clear zones, glow, vignette, transparent fits)
+- Audit fixes: settings saves no longer flip a custom app's animation on, theme edits reach running apps,
+  and archive/APNG parsing is hardened; uninstall can restore the previous cursor scheme
+
 ## Next
 
 - **Theme gallery** — a curated community index browsable inside Theme Studio
+- **Pointer packs to go** — import a downloaded `.zip`/folder of `.cur`/`.ani`/XCursor files as a pack,
+  fill a pack's missing roles from a base pack, pack search, rename and share a pack
+- **Bundled starter packs** — a small set of properly-licensed pointer packs shipped with the installer
 - **Video wallpapers (`.mp4`)** — Media Foundation decoding into the same frame pump
 - **Discord** (under review — its terms may not allow it)
 - **Reach:** signed programs, winget submission, more languages on the same table
