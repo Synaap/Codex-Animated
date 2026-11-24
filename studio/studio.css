@@ -658,6 +658,10 @@ details[open] summary { margin-bottom: 6px; }
 .cross-bar .seg { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; flex: 1 1 auto; }
 .cross-bar .seg::-webkit-scrollbar { height: 5px; }
 .cross-tabs { display: flex; gap: 4px; margin: 6px 0 12px; }
+.cross-bar-sub { margin: -8px 0 14px; gap: 8px; }
+.cross-bar-sub .hint { margin: 0; }
+.cross-bar-sub .select { width: auto; min-width: 0; max-width: 200px; }
+.pack-search { width: 240px; }
 
 .cross-cell { position: relative; display: grid; }
 .cross-cell > .cross-card { width: 100%; }

@@ -13,7 +13,7 @@ internal static class Setup
     private static readonly string[] Payload =
     {
         "AnimatedLauncher.exe", "ThemeStudio.exe",
-        "Install.ps1", "Install.cmd", "Uninstall.ps1", "Uninstall.cmd"
+        "Install.ps1", "Install.cmd", "Uninstall.ps1", "Uninstall.cmd", "cursors.zip"
     };
 
     private static int Main(string[] args)

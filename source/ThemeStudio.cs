@@ -23,8 +23,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Theme Studio")]
 [assembly: AssemblyProduct("Theme Studio")]
 [assembly: AssemblyDescription("Theme library and look editor for the Animated launchers")]
-[assembly: AssemblyVersion("3.3.0.0")]
-[assembly: AssemblyFileVersion("3.3.0.0")]
+[assembly: AssemblyVersion("3.4.0.0")]
+[assembly: AssemblyFileVersion("3.4.0.0")]
 
 internal static class ThemeStudioProgram
 {

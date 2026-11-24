@@ -1,0 +1,2 @@
+Bibata Cursor (Modern Classic) - GPL-3.0 - github.com/ful1e5/Bibata_Cursor
+Full license: https://github.com/ful1e5/Bibata_Cursor/blob/master/LICENSE

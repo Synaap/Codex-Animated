@@ -1436,7 +1436,31 @@
           call('resetCursorPack')
             .then(() => setStatus(_('Windows pointers restored')))
             .catch(e => setStatus(e.message || String(e), true));
-        }, 0xE777)));
+        }, 0xE777),
+        button(_('Import pack…'), 'quiet', () => {
+          call('importPack')
+            .then(r => {
+              if (r.cancelled) return;
+              S.cursorPacks = r.packs || S.cursorPacks;
+              if (r.imported) { S.crossPack = r.imported; S.crossTab = 'packs'; }
+              buildAll(); setStatus(_f('Imported {0}', r.imported || ''));
+            })
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE8B5),
+        button(_('Import folder…'), 'quiet', () => {
+          call('importPack', { mode: 'dir' })
+            .then(r => {
+              if (r.cancelled) return;
+              S.cursorPacks = r.packs || S.cursorPacks;
+              if (r.imported) { S.crossPack = r.imported; S.crossTab = 'packs'; }
+              buildAll(); setStatus(_f('Imported {0}', r.imported || ''));
+            })
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE8DA),
+        button(_('Get more'), 'quiet', () => {
+          call('openUrl', { url: 'https://custom-cursor.com/en/collections' })
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE774)));
 
     const packImg = (pack, f, cls) => h('img', { class: cls || 'cross-img',
       src: `img/cursor?pack=${encodeURIComponent(pack)}&file=${encodeURIComponent(f)}`, alt: f, draggable: false });
@@ -1459,14 +1483,54 @@
       }
       grid.append(h('button', { type: 'button', class: 'cross-card', onclick: () => uploadCursor(pack.name) },
         h('span', { class: 'cross-none', text: '+' }), h('span', { class: 'cross-name', text: _('Add pointer…') })));
+      const fillSel = h('select', { class: 'select', 'aria-label': _('Fill missing roles from') });
+      fillSel.append(h('option', { value: '', text: _('No fill') }));
+      for (const p of packs.filter(q => q.name !== pack.name))
+        fillSel.append(h('option', { value: p.name, text: p.name }));
+      fillSel.value = S.fillBase || '';
+      fillSel.addEventListener('change', () => { S.fillBase = fillSel.value; });
+      const themeSel = h('select', { class: 'select', 'aria-label': _('Link to theme') });
+      themeSel.append(h('option', { value: '', text: _('Link to theme…') }));
+      for (const t of S.themes || []) themeSel.append(h('option', { value: t.name, text: t.name }));
+      themeSel.value = '';
+      themeSel.addEventListener('change', () => {
+        if (!themeSel.value) return;
+        call('linkPointer', { theme: themeSel.value, pack: pack.name })
+          .then(() => setStatus(_f('Pointer linked to {0}', themeSel.value)))
+          .catch(e => setStatus(e.message || String(e), true));
+        themeSel.value = '';
+      });
+      let delPack;
+      const delBtn = button(_('Delete pack'), 'quiet danger', () => {
+        if (!delPack) { delPack = true; delBtn.textContent = _('Delete? Click again'); return; }
+        call('deletePack', { pack: pack.name })
+          .then(r => { S.cursorPacks = r || S.cursorPacks; S.crossPack = null; buildAll(); setStatus(_('Pack deleted')); })
+          .catch(e => setStatus(e.message || String(e), true));
+      }, 0xE74D);
       main.append(h('div', { class: 'cross-bar' },
         button('‹ ' + _('Back'), 'quiet', () => { S.crossPack = null; buildAll(); }, 0xE72B),
         h('h2', { class: 'cross-pack-name', text: pack.name }),
+        button(_('Rename…'), 'quiet', () => {
+          const next = (window.prompt(_('New pack name'), pack.name) || '').trim();
+          if (!next || next === pack.name) return;
+          call('renamePack', { pack: pack.name, name: next })
+            .then(r => { S.cursorPacks = r || S.cursorPacks; S.crossPack = /^[a-z0-9_-]+$/.test(next) ? next : S.crossPack; buildAll(); setStatus(_('Pack renamed')); })
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE8AC),
+        button(_('Export'), 'quiet', () => {
+          call('exportPack', { pack: pack.name })
+            .then(r => { if (!r.cancelled) setStatus(_f('Saved to {0}', r.exported || '')); })
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE74C),
+        delBtn,
         button(_('Use on Windows'), 'accent', () => {
-          call('applyCursorPack', { pack: pack.name })
+          call('applyCursorPack', { pack: pack.name, base: S.fillBase || '' })
             .then(() => setStatus(_('Windows pointers updated')))
             .catch(e => setStatus(e.message || String(e), true));
-        }, 0xE8A7)), grid);
+        }, 0xE8A7)),
+        h('div', { class: 'cross-bar cross-bar-sub' },
+          h('span', { class: 'hint', text: _('Fill missing roles:') }), fillSel,
+          h('span', { class: 'hint', text: _('Applies with theme:') }), themeSel), grid);
       return main;
     }
 
@@ -1483,8 +1547,18 @@
       main.append(grid);
       return main;
     }
+    const query = h('input', { class: 'input pack-search', type: 'search',
+      placeholder: _('Search packs…'), value: S.packQuery || '', 'aria-label': _('Search packs') });
+    query.addEventListener('input', () => { S.packQuery = query.value; S._focusPacks = true; buildAll(); });
+    query.addEventListener('keydown', e => e.stopPropagation());
+    if (S._focusPacks) {
+      S._focusPacks = false;
+      setTimeout(() => { query.focus(); query.setSelectionRange(query.value.length, query.value.length); }, 0);
+    }
+    main.append(h('div', { class: 'cross-bar cross-bar-sub' }, query));
     const pgrid = h('div', { class: 'cross-grid' });
-    for (const pack of packs) {
+    const q = (S.packQuery || '').trim().toLowerCase();
+    for (const pack of packs.filter(p => !q || p.name.indexOf(q) >= 0)) {
       const thumb = pack.files.indexOf('pointer') >= 0 ? 'pointer' : pack.files[0];
       const anyOn = pack.files.some(f => isOn(`img:${pack.name}/${f}`));
       pgrid.append(h('button', { type: 'button', class: `cross-card${anyOn ? ' sel' : ''}`,

@@ -128,12 +128,19 @@ Updates 1 to 18 are done on `main` and ship together in the next release. [CHANG
 - Audit fixes: settings saves no longer flip a custom app's animation on, theme edits reach running apps,
   and archive/APNG parsing is hardened; uninstall can restore the previous cursor scheme
 
+### 3.4.0 — Pointer packs to go
+
+- **Import packs** from a `.zip`, `.alpack` or folder of `.cur`/`.ani`/PNG-pair/XCursor files —
+  downloads from cursor sites drop straight into the gallery
+- Five **redistributable starter packs** ship in the installer (phinger MIT; Bibata, Catppuccin,
+  Nordzy GPL-3.0), so a fresh install is not empty
+- **Manage packs**: search, rename, delete, and export a pack as one shareable `.alpack`/`.zip`
+- **Fill missing roles** from a base pack when applying, and **link a pack to a theme** so the
+  theme applies the pointer scheme too
+
 ## Next
 
 - **Theme gallery** — a curated community index browsable inside Theme Studio
-- **Pointer packs to go** — import a downloaded `.zip`/folder of `.cur`/`.ani`/XCursor files as a pack,
-  fill a pack's missing roles from a base pack, pack search, rename and share a pack
-- **Bundled starter packs** — a small set of properly-licensed pointer packs shipped with the installer
 - **Video wallpapers (`.mp4`)** — Media Foundation decoding into the same frame pump
 - **Discord** (under review — its terms may not allow it)
 - **Reach:** signed programs, winget submission, more languages on the same table

@@ -636,6 +636,52 @@ internal static class LookTests
                 cur[8] == 0 && cur[9] == 0 &&                        // palette/reserved
                 cur[22] == 0x89 && cur[23] == 0x50;                  // PNG signature \x89P
             Check("cursor: .cur packing keeps dir, hotspot and PNG payload", curOk, null);
+
+            // CursorImport: an x11-style folder of XCursor blobs becomes a pack
+            // with role stems, a PNG per role and a written hotspot.
+            string xdir = Temp("xcur-src");
+            Directory.CreateDirectory(xdir);
+            using (var fs = new FileStream(Path.Combine(xdir, "default"), FileMode.Create))
+            using (var w = new BinaryWriter(fs))
+            {
+                w.Write(new byte[] { (byte)'X', (byte)'c', (byte)'u', (byte)'r' });
+                w.Write(16); w.Write(0x00030000); w.Write(1);                 // header, version, ntoc
+                w.Write(unchecked((int)0xfffd0002)); w.Write(24); w.Write(28); // toc: image, nominal 24, pos 28
+                w.Write(36 + 16 * 4); w.Write(unchecked((int)0xfffd0002));     // chunk size, type
+                w.Write(24); w.Write(1);                                       // subtype, version
+                w.Write(4); w.Write(4); w.Write(2); w.Write(3); w.Write(0);    // w,h,xhot,yhot,delay
+                var px = new byte[64];
+                for (int i = 0; i < px.Length; i += 4) { px[i + 3] = 255; px[i + 1] = 200; }
+                w.Write(px);
+            }
+            string imported = CursorImport.Import(xdir);
+            string ipack = Path.Combine(data, "Animated Launchers", "Cursors", imported);
+            bool xok = File.Exists(Path.Combine(ipack, "pointer.png")) &&
+                File.ReadAllText(Path.Combine(ipack, "hotspots.ini")).IndexOf("pointer=2,3") >= 0;
+            Check("cursor: import decodes XCursor blobs into role PNGs + hotspots", xok, imported);
+
+            // A zip of .cur files + install.inf role names maps onto stems too.
+            string zpath = Path.Combine(Temp("win-zip"), "win-pack.zip");
+            using (var zip = new System.IO.Compression.ZipArchive(File.Create(zpath), System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var e1 = zip.CreateEntry("cursors/normal-select.cur");
+                using (var s = e1.Open()) s.Write(cur, 0, cur.Length);
+                var e2 = zip.CreateEntry("cursors/scythe.cur");
+                using (var s = e2.Open()) s.Write(cur, 0, cur.Length);
+                var e3 = zip.CreateEntry("install.inf");
+                using (var w2 = new StreamWriter(e3.Open()))
+                    w2.Write("HKCU,\"Control Panel\\Cursors\",No,0x00020000,\"%10%\\cursors\\scythe.cur\"\r\n");
+            }
+            string imported2 = CursorImport.Import(zpath);
+            string ipack2 = Path.Combine(data, "Animated Launchers", "Cursors", imported2);
+            bool zok = File.Exists(Path.Combine(ipack2, "pointer.cur")) && File.Exists(Path.Combine(ipack2, "pointer.png")) &&
+                File.Exists(Path.Combine(ipack2, "no.cur")) &&
+                File.ReadAllText(Path.Combine(ipack2, "hotspots.ini")).IndexOf("pointer=6,7") >= 0;
+            Check("cursor: import maps .cur names + install.inf roles, previews + hotspots", zok, imported2);
+
+            // Two packs with the same base name dedupe instead of colliding.
+            Check("cursor: import dedupes pack names", imported != imported2 &&
+                Directory.Exists(Path.Combine(data, "Animated Launchers", "Cursors", imported)), imported2);
         }
         finally { Environment.SetEnvironmentVariable("ANIMATED_DATA", keepData); }
     }

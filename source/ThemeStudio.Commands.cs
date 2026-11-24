@@ -42,6 +42,14 @@ internal sealed partial class StudioForm
                     if (app == null) throw new ArgumentException("Unknown app.");
                     ApplyAndWatch(name, app);
                 }
+                // A theme can name its pointer pack (linkPointer); a missing or
+                // broken pack must never fail the theme apply.
+                try
+                {
+                    string link = IniFile.Load(Path.Combine(ThemeLibrary.Folder(name), "theme.ini")).Get("pointer");
+                    if (!string.IsNullOrEmpty(link)) CursorScheme.Apply(link);
+                }
+                catch { }
                 return AppList();
             }
             case "removeTheme":
@@ -544,6 +552,18 @@ internal sealed partial class StudioForm
                 if (!(evalMode && Flag(m, "dryRun"))) Clipboard.SetText(report);
                 return new Dictionary<string, object> { { "copied", true }, { "text", report } };
             }
+            case "openUrl":
+            {
+                // External browser open, allowlisted to the cursor galleries the
+                // pointer page points at (same pattern as getUpdate's host check).
+                string url = Str(m, "url") ?? "";
+                Uri u;
+                if (!Uri.TryCreate(url, UriKind.Absolute, out u) || u.Scheme != "https" ||
+                    !(u.Host.EndsWith("custom-cursor.com") || u.Host.EndsWith("rw-designer.com") || u.Host.EndsWith("cursors-4u.com")))
+                    throw new ArgumentException("That address is not allowed.");
+                using (Process.Start(url)) { }
+                return new Dictionary<string, object> { { "opened", true } };
+            }
             case "openLogFolder":
             {
                 App app = FindApp(Str(m, "app"));
@@ -764,11 +784,69 @@ internal sealed partial class StudioForm
                 return CursorPacks();
             }
             case "applyCursorPack":
-                CursorScheme.Apply(Str(m, "pack"));
+                CursorScheme.Apply(Str(m, "pack"), Str(m, "base"));
                 return new Dictionary<string, object> { { "applied", true } };
             case "resetCursorPack":
                 CursorScheme.Reset();
                 return new Dictionary<string, object> { { "applied", true } };
+            case "importPack":
+            {
+                // mode=dir picks a folder (e.g. an extracted .zip); otherwise a .zip file.
+                string path = TestPath(m);
+                if (path == null)
+                    path = Str(m, "mode") == "dir" ? PickFolder() :
+                        PickFile("Import a pointer pack", "Pointer packs (*.alpack;*.zip)|*.alpack;*.zip|All files (*.*)|*.*");
+                if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
+                string imported = CursorImport.Import(path);
+                return new Dictionary<string, object> { { "packs", CursorPacks() }, { "imported", imported } };
+            }
+            case "renamePack":
+            {
+                string from = Path.Combine(ThemeLibrary.CursorsRoot, ThemeLibrary.CursorClean(Str(m, "pack")));
+                string newName = ThemeLibrary.CursorClean(Str(m, "name"));
+                if (newName.Length == 0) throw new ArgumentException("That name is not usable.");
+                string to = Path.Combine(ThemeLibrary.CursorsRoot, newName);
+                if (!Directory.Exists(from)) throw new FileNotFoundException("That pointer pack no longer exists.");
+                if (!from.Equals(to, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Directory.Exists(to)) throw new ArgumentException("Another pack already has that name.");
+                    Directory.Move(from, to);
+                }
+                return CursorPacks();
+            }
+            case "deletePack":
+            {
+                string dir = Path.Combine(ThemeLibrary.CursorsRoot, ThemeLibrary.CursorClean(Str(m, "pack")));
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+                return CursorPacks();
+            }
+            case "exportPack":
+            {
+                string pack = ThemeLibrary.CursorClean(Str(m, "pack"));
+                string dir = Path.Combine(ThemeLibrary.CursorsRoot, pack);
+                if (!Directory.Exists(dir)) throw new FileNotFoundException("That pointer pack no longer exists.");
+                string target = TestPath(m) ?? PickSave("Export " + pack, pack + ".alpack",
+                    "Pointer pack (*.alpack)|*.alpack|Zip (*.zip)|*.zip");
+                if (target == null) return new Dictionary<string, object> { { "cancelled", true } };
+                if (File.Exists(target)) File.Delete(target);
+                ZipFile.CreateFromDirectory(dir, target);
+                return new Dictionary<string, object> { { "exported", target } };
+            }
+            case "linkPointer":
+            {
+                // theme.ini "pointer=<pack>" — applying that theme switches the
+                // Windows scheme too (applyTheme). "" unlinks.
+                string name = ExistingTheme(m);
+                string pack = ThemeLibrary.CursorClean(Str(m, "pack"));
+                string root = ThemeLibrary.Folder(name);
+                ThemeLibrary.WithLock(root, delegate {
+                    string iniPath = Path.Combine(root, "theme.ini");
+                    IniFile ini = IniFile.Load(iniPath);
+                    ini.Set("pointer", pack.Length == 0 ? null : pack);
+                    ini.Save(iniPath);
+                });
+                return State();
+            }
             case "removeSlide":
             {
                 string name = ExistingTheme(m);

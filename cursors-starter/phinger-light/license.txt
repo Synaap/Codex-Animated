@@ -1,0 +1,2 @@
+phinger cursors - MIT - github.com/phisch/phinger-cursors
+Full license: https://github.com/phisch/phinger-cursors/blob/main/LICENSE

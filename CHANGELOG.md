@@ -4,6 +4,40 @@ All notable changes to Animated Launchers (released as Codex Animated). Versions
 [semantic versioning](https://semver.org/). Download releases from the
 [releases page](https://github.com/Synaap/Codex-Animated/releases).
 
+## 3.4.0 — 2026-11-23
+
+### Added
+
+- **Cursor pack importer**: the Mouse pointers tab imports a `.zip`, a
+  `.alpack` export or a plain folder of cursor files as a new pack
+  (`importPack`, `source/CursorImport.cs`). Windows `.cur`/`.ani` files map to
+  their scheme roles (including `install.inf`-style names), `.png` pairs match
+  filenames like `…-cursor.png`/`…-pointer.png`, and Linux **XCursor** files
+  are decoded to role PNGs plus a `hotspots.ini` — so packs downloaded from
+  cursor sites drop straight in.
+- **Bundled starter packs**: the installer now ships `cursors.zip` (built from
+  `cursors-starter\`) with five redistributable packs — phinger dark/light
+  (MIT), Bibata Modern Classic, Catppuccin pink and Nordzy (GPL-3.0; source
+  and license in each pack's `license.txt`) — so a fresh install has real
+  packs to browse instead of an empty gallery.
+- **Pack management**: packs can be **renamed**, **deleted** and **exported**
+  as a single shareable `.alpack`/`.zip` (`renamePack`, `deletePack`,
+  `exportPack`), and a search box filters the gallery.
+- **Fill missing roles**: a pack that only covers a few roles can borrow the
+  rest from a chosen base pack when applied (`CursorScheme.Apply` overload +
+  per-pack fill picker) — 2-role "cursor + pointer" sets no longer fall back
+  to Windows defaults for everything else.
+- **Theme ↔ pointer link**: a pack can be linked to a theme so applying that
+  theme also applies the pointer scheme (`pointer=` in `theme.ini`,
+  `linkPointer`, applied inside `applyTheme`).
+- **Get more packs** opens the custom-cursor.com collections page in the
+  browser through a host-allowlisted `openUrl` command.
+
+### Fixed
+
+- Zip imports read each entry's bytes while the archive is still open —
+  deferred reads previously failed with "No cursor files found".
+
 ## 3.3.0 — 2026-11-23
 
 ### Added

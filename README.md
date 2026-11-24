@@ -24,10 +24,12 @@ Themes, looks and the animation are edited in **Theme Studio**, and one theme li
   Studio; a still first frame is kept for the splash and previews.
 - **Looks that keep text readable** — visibility, blur, dim, tint, a clear zone on one side, glow,
   vignette, a light-app mode, a subtle focus drift and fit modes down to crisp pixel art.
-- **Mouse pointers** — a gallery of pointer packs on their own tab: pick a pack (or upload your own
-  images), see every role it covers, and apply it as your real Windows cursor scheme with one
-  click — backup and **Windows default** restore included. A drawn reticle can also follow the
-  cursor inside each app's window, per app, in the theme accent or a fixed colour.
+- **Mouse pointers** — a gallery of pointer packs on their own tab: five open-source packs ship in
+  the installer (phinger, Bibata, Catppuccin, Nordzy), more drop in from a `.zip`/`.alpack`/folder
+  of `.cur`, `.ani`, PNG or Linux XCursor files, and a pack applies as your real Windows cursor
+  scheme with one click — backup, **Windows default** restore, missing-role fill from a base pack
+  and a theme↔pointer link included. A drawn reticle can also follow the cursor inside each app's
+  window, per app, in the theme accent or a fixed colour.
 - **Theme Studio** — live preview, undo, drag-and-drop import, shareable `.altheme` files, six starter
   themes painted in code, and a French or English interface.
 - **Variety** — rotate themes, follow Windows light and dark mode, give an app a night theme.
@@ -129,9 +131,11 @@ with the startup animation. **Theme Studio…** opens the editor;
 - **Apps and startup** sets, per app: its theme, the animation (on/off, speed, style, first start
   only), theme rotation, a light-mode and a night theme with their hours, extra dimming, hiding in
   full screen, and a live status line (attached, watching, off or parked).
-- **Mouse pointers**: browse pointer packs, preview every role they cover, apply one as your
-  Windows cursor scheme or restore the default, upload your own images into a new pack, and give
-  each app a drawn reticle that follows the cursor inside its window.
+- **Mouse pointers**: browse pointer packs (five redistributable ones ship with the installer),
+  import a `.zip`/`.alpack`/folder of `.cur`, `.ani`, PNG or XCursor files, search, rename, delete
+  and export packs, fill a pack's missing roles from a base pack, link a pack to a theme, apply a
+  scheme to real Windows cursors or restore the default, and give each app a drawn reticle that
+  follows the cursor inside its window.
 - **Settings**: the language (Same as Windows, English, Français), a master **Startup animation**
   switch for every app at once, **Check for updates** with one-click install, **Copy report** for
   bug reports, the logs folder and **Restart helpers**.

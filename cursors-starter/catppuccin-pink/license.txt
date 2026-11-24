@@ -1,0 +1,2 @@
+Catppuccin cursors - GPL-3.0 - github.com/catppuccin/cursors
+Full license: https://github.com/catppuccin/cursors/blob/main/LICENSE

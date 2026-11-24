@@ -16,10 +16,23 @@ if (-not $Version) {
 }
 if (-not $NoBuild) { & (Join-Path $package 'source\Build.ps1') }
 
+# cursors.zip holds the redistributable starter packs under cursors-starter\.
+# Install.ps1 expands it next to itself and seeds the packs the same way a
+# loose cursors\ folder does.
+$cursorZip = Join-Path $package 'cursors.zip'
+$cursorSource = Join-Path $package 'cursors-starter'
+if (Test-Path -LiteralPath $cursorSource) {
+    if (Test-Path -LiteralPath $cursorZip) { Remove-Item -LiteralPath $cursorZip }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($cursorSource, $cursorZip)
+} else {
+    if (Test-Path -LiteralPath $cursorZip) { Remove-Item -LiteralPath $cursorZip }
+}
+
 # Setup.exe is the single-file installer: the payload rides inside as resources,
 # extracts to %TEMP% and runs Install.ps1. Compiled here so it always ships the
 # same build as the loose exes in this zip.
-$payload = 'AnimatedLauncher.exe', 'ThemeStudio.exe', 'Install.ps1', 'Install.cmd', 'Uninstall.ps1', 'Uninstall.cmd'
+$payload = 'AnimatedLauncher.exe', 'ThemeStudio.exe', 'Install.ps1', 'Install.cmd', 'Uninstall.ps1', 'Uninstall.cmd', 'cursors.zip'
 foreach ($file in $payload) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $file))) { throw "$file is missing. Run without -NoBuild." }
 }
@@ -32,7 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw "The Setup.exe build failed with exit code $LAS
 
 $entries = 'AnimatedLauncher.exe', 'ThemeStudio.exe', 'Setup.exe',
     'Install.cmd', 'Install.ps1', 'Uninstall.cmd', 'Uninstall.ps1', 'README.md',
-    'notices/LICENSE.txt', 'notices/NOTICE.txt'
+    'notices/LICENSE.txt', 'notices/NOTICE.txt', 'cursors.zip'
 foreach ($entry in $entries) {
     if (-not (Test-Path -LiteralPath (Join-Path $package ($entry -replace '/', '\')))) { throw "$entry is missing. Run without -NoBuild." }
 }

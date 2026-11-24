@@ -317,9 +317,19 @@ if (Test-Path -LiteralPath $themeSource) {
     }
 }
 
-# 8b. Seed cursor packs the same way (only when a cursors folder is next to this script)
+# 8b. Seed cursor packs the same way (a cursors folder or the shipped cursors.zip)
 $cursorsLibrary = Join-Path $env:LOCALAPPDATA 'Animated Launchers\Cursors'
 $cursorSource = Join-Path $package 'cursors'
+$cursorZip = Join-Path $package 'cursors.zip'
+$cursorExpand = $null
+if (-not (Test-Path -LiteralPath $cursorSource) -and (Test-Path -LiteralPath $cursorZip)) {
+    $cursorExpand = Join-Path $env:TEMP ('animated-cursors-' + [guid]::NewGuid().ToString('n'))
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($cursorZip, $cursorExpand)
+        $cursorSource = $cursorExpand
+    } catch { $cursorExpand = $null }
+}
 if (Test-Path -LiteralPath $cursorSource) {
     foreach ($pack in Get-ChildItem -LiteralPath $cursorSource -Directory) {
         $target = Join-Path $cursorsLibrary $pack.Name
@@ -331,6 +341,9 @@ if (Test-Path -LiteralPath $cursorSource) {
         }
         Write-Output "seeded cursor pack $($pack.Name)"
     }
+}
+if ($cursorExpand -and (Test-Path -LiteralPath $cursorExpand)) {
+    Remove-Item -LiteralPath $cursorExpand -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # 9. Installed apps entry (Windows Settings > Apps > Installed apps)

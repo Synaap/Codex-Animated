@@ -53,12 +53,43 @@ internal static class CursorScheme
     }
 
     // Apply a pack as the Windows cursor scheme. Throws on a missing pack or
-    // when no file maps onto a role.
-    internal static void Apply(string pack)
+    // when no file maps onto a role. fillFrom names a second pack whose files
+    // cover the roles this one lacks.
+    internal static void Apply(string pack) { Apply(pack, null); }
+    internal static void Apply(string pack, string fillFrom)
     {
         string dir = Path.Combine(ThemeLibrary.CursorsRoot, ThemeLibrary.CursorClean(pack));
         if (!Directory.Exists(dir)) throw new FileNotFoundException("That pointer pack no longer exists.");
         var map = new Dictionary<string, string>();
+        MapPack(dir, map);
+        if (!string.IsNullOrEmpty(fillFrom))
+        {
+            string fillDir = Path.Combine(ThemeLibrary.CursorsRoot, ThemeLibrary.CursorClean(fillFrom));
+            if (Directory.Exists(fillDir) && !fillDir.Equals(dir, StringComparison.OrdinalIgnoreCase))
+                MapPack(fillDir, map);
+        }
+        if (map.Count == 0) throw new ArgumentException("None of this pack's files match a pointer role (pointer, ibeam, no, move…).");
+        SaveBackup();
+        // Every role is written: roles this pack lacks fall back to the saved
+        // scheme, so no pointer from a previously applied pack lingers.
+        var saved = LoadBackup();
+        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(KeyPath))
+        {
+            key.SetValue("", "Animated Launchers " + Path.GetFileName(dir));
+            foreach (string[] role in Roles)
+            {
+                string value;
+                if (!map.TryGetValue(role[0], out value)) saved.TryGetValue(role[0], out value);
+                SetRole(key, role[0], value ?? "");
+            }
+        }
+        SystemParametersInfo(SpiSetCursors, 0, IntPtr.Zero, SpifUpdateIniFile | SpifSendChange);
+    }
+
+    // Fills map from the role files inside dir; roles already in map win, so a
+    // second call can complete a scheme without overwriting it.
+    private static void MapPack(string dir, Dictionary<string, string> map)
+    {
         var hotspots = Hotspots(dir);
         string gen = Path.Combine(dir, "generated");
         Directory.CreateDirectory(gen);
@@ -87,22 +118,6 @@ internal static class CursorScheme
             PngToCur(file, cur, hx, hy);
             map[role] = cur;
         }
-        if (map.Count == 0) throw new ArgumentException("None of this pack's files match a pointer role (pointer, ibeam, no, move…).");
-        SaveBackup();
-        // Every role is written: roles this pack lacks fall back to the saved
-        // scheme, so no pointer from a previously applied pack lingers.
-        var saved = LoadBackup();
-        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(KeyPath))
-        {
-            key.SetValue("", "Animated Launchers " + Path.GetFileName(dir));
-            foreach (string[] role in Roles)
-            {
-                string value;
-                if (!map.TryGetValue(role[0], out value)) saved.TryGetValue(role[0], out value);
-                SetRole(key, role[0], value ?? "");
-            }
-        }
-        SystemParametersInfo(SpiSetCursors, 0, IntPtr.Zero, SpifUpdateIniFile | SpifSendChange);
     }
 
     private static void SetRole(RegistryKey key, string role, string value)
