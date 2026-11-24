@@ -51,6 +51,9 @@ internal sealed class HelperHost : ApplicationContext
         WatchCustomApps();
         marshal.Hotkey += delegate { ToggleAllArtwork(); };
         marshal.NextThemeKey += delegate { NextThemeAll(); };
+        marshal.PauseKey += delegate { TogglePauseAll(); };
+        marshal.MoreKey += delegate { NudgeAll(5); };
+        marshal.LessKey += delegate { NudgeAll(-5); };
         BuildMenu();
         tray.Text = "Animated Launchers";
         try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
@@ -394,6 +397,23 @@ internal sealed class HelperHost : ApplicationContext
         AppLog.Write("helper", "hotkey asked every app for its next theme");
     }
 
+    // Win+Alt+P: any playing animation pauses them all; all paused resumes all.
+    private void TogglePauseAll()
+    {
+        bool anyPlaying = false;
+        foreach (var pair in sessions) if (!pair.Value.PauseHotkey) { anyPlaying = true; break; }
+        foreach (var pair in sessions) pair.Value.SetPauseHotkey(anyPlaying);
+        AppLog.Write("helper", "hotkey " + (anyPlaying ? "paused" : "resumed") + " the animations");
+    }
+
+    // Win+Alt+Up/Down: nudge every session's artwork opacity, like the tray's
+    // More/Less visible on each app.
+    private void NudgeAll(int delta)
+    {
+        foreach (var pair in sessions) pair.Value.NudgeVisibility(delta);
+        AppLog.Write("helper", "hotkey nudged every artwork " + (delta > 0 ? "up" : "down"));
+    }
+
     // The SynchronizingObject for the watchers and the WM_HOTKEY receiver.
     // Win+Alt+H is the global artwork toggle; a registration failure (another app
     // owns it) just disables the hotkey.
@@ -401,35 +421,46 @@ internal sealed class HelperHost : ApplicationContext
     {
         private const int HotkeyMessage = 0x0312;
         private const int NoRepeat = 0x4000, ModAlt = 0x0001, ModWin = 0x0008;
-        private bool registered, registeredNext;
+        private bool registered, registeredNext, registeredPause, registeredUp, registeredDown;
 
         internal event EventHandler Hotkey;
         internal event EventHandler NextThemeKey;
+        internal event EventHandler PauseKey;
+        internal event EventHandler MoreKey;
+        internal event EventHandler LessKey;
 
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            try { registered = RegisterHotKey(Handle, 1, NoRepeat | ModAlt | ModWin, (int)Keys.H); }
-            catch (Exception error)
-            {
-                if (!(error is Win32Exception || error is System.Runtime.InteropServices.ExternalException)) throw;
-                registered = false;
-            }
-            try { registeredNext = RegisterHotKey(Handle, 2, NoRepeat | ModAlt | ModWin, (int)Keys.T); }
-            catch (Exception error)
-            {
-                if (!(error is Win32Exception || error is System.Runtime.InteropServices.ExternalException)) throw;
-                registeredNext = false;
-            }
+            registered = TryRegister(1, Keys.H);
+            registeredNext = TryRegister(2, Keys.T);
+            registeredPause = TryRegister(3, Keys.P);
+            registeredUp = TryRegister(4, Keys.Up);
+            registeredDown = TryRegister(5, Keys.Down);
             if (!registered) AppLog.Write("helper", "the Win+Alt+H artwork hotkey is taken; it stays off");
             if (!registeredNext) AppLog.Write("helper", "the Win+Alt+T theme hotkey is taken; it stays off");
+            if (!registeredPause) AppLog.Write("helper", "the Win+Alt+P pause hotkey is taken; it stays off");
+            if (!registeredUp || !registeredDown) AppLog.Write("helper", "a Win+Alt+Arrow opacity hotkey is taken; it stays off");
+        }
+
+        private bool TryRegister(int id, Keys key)
+        {
+            try { return RegisterHotKey(Handle, id, NoRepeat | ModAlt | ModWin, (int)key); }
+            catch (Exception error)
+            {
+                if (!(error is Win32Exception || error is System.Runtime.InteropServices.ExternalException)) throw;
+                return false;
+            }
         }
 
         protected override void OnHandleDestroyed(EventArgs e)
         {
             if (registered) UnregisterHotKey(Handle, 1);
             if (registeredNext) UnregisterHotKey(Handle, 2);
-            registered = registeredNext = false;
+            if (registeredPause) UnregisterHotKey(Handle, 3);
+            if (registeredUp) UnregisterHotKey(Handle, 4);
+            if (registeredDown) UnregisterHotKey(Handle, 5);
+            registered = registeredNext = registeredPause = registeredUp = registeredDown = false;
             base.OnHandleDestroyed(e);
         }
 
@@ -437,7 +468,15 @@ internal sealed class HelperHost : ApplicationContext
         {
             if (m.Msg == HotkeyMessage)
             {
-                EventHandler handler = m.WParam.ToInt32() == 2 ? NextThemeKey : Hotkey;
+                EventHandler handler = null;
+                switch (m.WParam.ToInt32())
+                {
+                    case 1: handler = Hotkey; break;
+                    case 2: handler = NextThemeKey; break;
+                    case 3: handler = PauseKey; break;
+                    case 4: handler = MoreKey; break;
+                    case 5: handler = LessKey; break;
+                }
                 if (handler != null) handler(this, EventArgs.Empty);
                 return;
             }

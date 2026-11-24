@@ -10,6 +10,7 @@ $exe = Join-Path $out 'LookTests.exe'
     (Join-Path $package 'source\AppTable.cs') `
     (Join-Path $package 'source\ThemeSettings.cs') `
     (Join-Path $package 'source\ThemeLibrary.cs') `
+    (Join-Path $package 'source\CursorScheme.cs') `
     (Join-Path $package 'source\StarterArt.cs') `
     (Join-Path $package 'source\ThemePack.cs') `
     (Join-Path $package 'source\ArtworkLook.cs') `

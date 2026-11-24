@@ -21,7 +21,7 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
     // straight into, skipping the per-frame bitmap alloc, GetHbitmap copy and
     // GDI teardown the still path pays. animSize tracks the buffer's extent.
     private bool animated;
-    private IntPtr animDc, animBmp, animOld;
+    private IntPtr animDc, animBmp, animOld, animBits;
     private Size animSize;
 
     internal PreviewArtworkChild(IntPtr parent, uint expectedPid, Bitmap image, Look look,
@@ -114,18 +114,22 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
         if (size != presented || imageChanged)
         {
             bool pixelPass = ArtworkLook.NeedsPixelPass(look);
-            if (animated && !pixelPass)
+            if (animated)
             {
                 // Draw the frame straight into the persistent DIB's DC: one
                 // stretch (bilinear — bicubic can't hold gif cadence) + one
-                // layered update, no per-frame alloc or GDI teardown.
+                // layered update, no per-frame alloc or GDI teardown. A look
+                // needing per-pixel alpha folds the mask into the DIB in place —
+                // slower than the opaque path but still one frame per step.
                 if (animSize != size || animDc == IntPtr.Zero)
                 {
                     FreeAnimBuffers();
                     animDc = CreateCompatibleDC(IntPtr.Zero);
-                    animBmp = animDc == IntPtr.Zero ? IntPtr.Zero : ArtworkLook.EmptyDib(size.Width, size.Height);
+                    animBits = IntPtr.Zero;
+                    if (animDc != IntPtr.Zero) animBmp = ArtworkLook.EmptyDib(size.Width, size.Height, out animBits);
                     animOld = animBmp == IntPtr.Zero ? IntPtr.Zero : SelectObject(animDc, animBmp);
-                    if (animOld == IntPtr.Zero || animOld == new IntPtr(-1)) { FreeAnimBuffers(); throw new Win32Exception(); }
+                    if (animOld == IntPtr.Zero || animOld == new IntPtr(-1) || animBits == IntPtr.Zero)
+                    { FreeAnimBuffers(); throw new Win32Exception(); }
                     animSize = size;
                 }
                 RectangleF acrop; Rectangle adst; InterpolationMode amode;
@@ -133,11 +137,32 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
                 using (var g = Graphics.FromHdc(animDc))
                 {
                     g.InterpolationMode = InterpolationMode.Bilinear;
+                    if (amode == InterpolationMode.NearestNeighbor) g.PixelOffsetMode = PixelOffsetMode.Half;
+                    if (look.Fit != "cover") g.Clear(Color.Transparent);
                     g.DrawImage(image, adst, acrop, GraphicsUnit.Pixel);
+                }
+                byte format = 0;
+                if (pixelPass)
+                {
+                    int len = size.Width * size.Height * 4;
+                    var px = new byte[len];
+                    Marshal.Copy(animBits, px, 0, len);
+                    // GDI+ leaves the DIB's alpha bytes unspecified: opaque inside
+                    // the drawn rectangle, transparent in the bars around it.
+                    for (int py = 0; py < size.Height; py++)
+                    {
+                        bool rowIn = py >= adst.Top && py < adst.Bottom;
+                        for (int pxl = 0; pxl < size.Width; pxl++)
+                            px[((py * size.Width + pxl) << 2) + 3] =
+                                (byte)(rowIn && pxl >= adst.Left && pxl < adst.Right ? 255 : 0);
+                    }
+                    ArtworkLook.ApplyPixelMask(px, size.Width, size.Height, look);
+                    Marshal.Copy(px, 0, animBits, len);
+                    format = 1;
                 }
                 var afrom = new NativePoint();
                 var asize = new NativeSize { W = size.Width, H = size.Height };
-                var ablend = new Blend { Alpha = look.Alpha, Format = 0 };
+                var ablend = new Blend { Alpha = look.Alpha, Format = format };
                 if (!UpdateLayeredWindow(Handle, IntPtr.Zero, IntPtr.Zero, ref asize, animDc,
                     ref afrom, 0, ref ablend, 2)) throw new Win32Exception();
                 presented = size;
@@ -208,6 +233,7 @@ internal sealed class PreviewArtworkChild : NativeWindow, IDisposable
     {
         if (animOld != IntPtr.Zero && animOld != new IntPtr(-1)) SelectObject(animDc, animOld);
         animOld = IntPtr.Zero;
+        animBits = IntPtr.Zero;
         if (animBmp != IntPtr.Zero) { DeleteObject(animBmp); animBmp = IntPtr.Zero; }
         if (animDc != IntPtr.Zero) { DeleteDC(animDc); animDc = IntPtr.Zero; }
         animSize = Size.Empty;

@@ -52,6 +52,18 @@ internal sealed class AppSession : IDisposable
     // True when gif holds a slides\ folder of stills rather than a real gif —
     // its delays come from the profile's slide seconds, not the file.
     private bool gifIsSlides;
+    // Slide crossfade: the previous frame, when the fade started and a reusable
+    // blend buffer at frame size.
+    private Bitmap crossFrom, crossBmp;
+    private int crossStart;
+    private const int CrossMs = 400;
+    // Win+Alt+P: an in-memory freeze on top of the persisted gifPause flag.
+    internal bool PauseHotkey;
+    // A custom crosshair: one small layered child per slot, moved by a ~30 ms
+    // cursor poll; hidden while the cursor is outside the window.
+    private readonly System.Windows.Forms.Timer crossTimer = new System.Windows.Forms.Timer();
+    private string crossStyle;
+    private Color crossColor;
     private string wallpaperStamp;
     // One slot per accepted app window, capped so a window factory cannot flood it.
     private readonly List<WindowSlot> slots = new List<WindowSlot>();
@@ -95,6 +107,8 @@ internal sealed class AppSession : IDisposable
         onEvent = WindowChanged;
         timer.Tick += delegate { Guard(Tick, "window refresh"); };
         frameTimer.Tick += delegate { Guard(FrameTick, "wallpaper frame"); };
+        crossTimer.Interval = 33;
+        crossTimer.Tick += delegate { Guard(CrossTick, "crosshair"); };
         driftTimer.Interval = DriftInterval;
         driftTimer.Tick += delegate { Guard(DriftTick, "artwork drift"); };
         reloadTimer.Interval = ReloadDelay;
@@ -625,6 +639,7 @@ internal sealed class AppSession : IDisposable
         if (string.Equals(name, "wallpaper.jpg", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "wallpaper.gif", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "wallpaper.apng", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "slides", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "avatar.jpg", StringComparison.OrdinalIgnoreCase))
             ScheduleReload(ReloadDelay);
     }
@@ -673,9 +688,9 @@ internal sealed class AppSession : IDisposable
         next.Look = EffectiveLook(next.Look, next);
         string stamp = WallpaperStamp();
         bool rawChanged = stamp != wallpaperStamp;
-        // Load, unload or re-render the animation: a new file, or the look
-        // crossing the per-pixel-effects boundary it cannot run under.
-        if (rawChanged || (gif != null) == ArtworkLook.NeedsPixelPass(next.Look))
+        // Load, unload or re-render the animation: only a new file needs the
+        // full reload; look changes re-render the decoded frames below.
+        if (rawChanged || gif == null && gifFrames == null)
             TryLoadGif(next.Look);
         else if (gif != null && !next.Look.SameRender(profile.Look))
             RenderGifFrames(next.Look);
@@ -723,9 +738,13 @@ internal sealed class AppSession : IDisposable
         profile.GifPause = next.GifPause;
         profile.BattSaver = next.BattSaver;
         profile.SlideSec = next.SlideSec;
+        profile.PauseBg = next.PauseBg;
+        profile.Crosshair = next.Crosshair;
+        profile.CrosshairColor = next.CrosshairColor;
+        UpdateCrosshair();
         ComputeGifDelays();
         // A gif frame is owned by gifFrames; only free looks' own renders.
-        if (relook && oldSource != oldRaw && (gifFrames == null || Array.IndexOf(gifFrames, oldSource) < 0))
+        if (relook && oldSource != oldRaw && oldSource != crossBmp && (gifFrames == null || Array.IndexOf(gifFrames, oldSource) < 0))
             oldSource.Dispose();
         if (rawChanged)
         {
@@ -742,7 +761,7 @@ internal sealed class AppSession : IDisposable
         var apng = new FileInfo(Path.Combine(settingsDirectory, "wallpaper.apng"));
         var slides = new DirectoryInfo(Path.Combine(settingsDirectory, "slides"));
         long slideStamp = 0;
-        if (slides.Exists) foreach (FileInfo file in slides.GetFiles()) slideStamp += file.LastWriteTimeUtc.Ticks + file.Length;
+        if (slides.Exists) foreach (FileInfo file in slides.GetFiles()) slideStamp = slideStamp * 31 + file.LastWriteTimeUtc.Ticks + file.Length + file.Name.GetHashCode();
         return (info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "none") +
             "|" + (animated.Exists ? animated.LastWriteTimeUtc.Ticks + ":" + animated.Length : "none") +
             "|" + (apng.Exists ? apng.LastWriteTimeUtc.Ticks + ":" + apng.Length : "none") +
@@ -764,11 +783,9 @@ internal sealed class AppSession : IDisposable
         if (File.Exists(path)) art = ImageCodec.LoadGif(path, out reason);
         else if (File.Exists(apngPath)) art = ImageCodec.LoadApng(apngPath, out reason);
         else if (Directory.Exists(slides)) { art = ImageCodec.LoadSlides(slides, out reason); gifIsSlides = art != null; }
-        if (art != null && ArtworkLook.NeedsPixelPass(look))
-        {
-            art.Dispose(); art = null;
-            reason = "the look uses clear zones, glow or vignette, which need a still image";
-        }
+        // A look needing per-pixel alpha still animates: the child folds the
+        // mask into the persistent DIB in place each frame, so clear zones,
+        // glow and vignette all work on moving wallpapers.
         FreeGif();
         if (art == null)
         {
@@ -800,12 +817,52 @@ internal sealed class AppSession : IDisposable
         catch { foreach (Bitmap frame in frames) if (frame != null) frame.Dispose(); throw; }
         Bitmap[] old = gifFrames;
         gifFrames = frames;
+        // A crossfade in flight still points at an old frame about to die, and so
+        // may the presented source.
+        crossFrom = null;
+        if (source != null && old != null && Array.IndexOf(old, source) >= 0)
+            source = frames[Math.Min(gifIndex, frames.Length - 1)];
         if (old != null) foreach (Bitmap frame in old) if (frame != null) frame.Dispose();
+    }
+
+    // crossFrom over the next slide, alpha t. The canvas takes the incoming
+    // slide's size; slides may differ in size, so the outgoing one is
+    // cover-scaled onto it. Reuses crossBmp between steps.
+    private Bitmap BlendFrames(Bitmap a, Bitmap b, float t)
+    {
+        if (crossBmp == null || crossBmp.Size != b.Size)
+        {
+            if (crossBmp != null) crossBmp.Dispose();
+            crossBmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppRgb);
+        }
+        using (var g = Graphics.FromImage(crossBmp))
+        {
+            if (a.Size == b.Size) g.DrawImageUnscaled(a, 0, 0);
+            else
+            {
+                double scale = Math.Max((double)b.Width / a.Width, (double)b.Height / a.Height);
+                int sw = (int)Math.Ceiling(b.Width / scale), sh = (int)Math.Ceiling(b.Height / scale);
+                var src = new Rectangle((a.Width - sw) / 2, (a.Height - sh) / 2, Math.Min(sw, a.Width), Math.Min(sh, a.Height));
+                g.DrawImage(a, new Rectangle(0, 0, b.Width, b.Height), src.X, src.Y, src.Width, src.Height, GraphicsUnit.Pixel);
+            }
+            var cm = new ColorMatrix { Matrix33 = t };
+            using (var ia = new ImageAttributes())
+            {
+                ia.SetColorMatrix(cm);
+                g.DrawImage(b, new Rectangle(0, 0, b.Width, b.Height), 0, 0, b.Width, b.Height, GraphicsUnit.Pixel, ia);
+            }
+        }
+        return crossBmp;
     }
 
     private void FreeGif()
     {
         frameTimer.Stop();
+        crossFrom = null;
+        // `source` must never keep pointing at a frame disposed below.
+        if (source != null && source != raw &&
+            (source == crossBmp || (gifFrames != null && Array.IndexOf(gifFrames, source) >= 0))) source = raw;
+        if (crossBmp != null) { crossBmp.Dispose(); crossBmp = null; }
         gifDuration = 0;
         if (gifFrames != null) { foreach (Bitmap frame in gifFrames) if (frame != null) frame.Dispose(); gifFrames = null; }
         if (gif != null) { gif.Dispose(); gif = null; }
@@ -826,14 +883,29 @@ internal sealed class AppSession : IDisposable
         int[] d = gifEff ?? gif.Delays;
         int acc = 0, idx = 0;
         while (idx < d.Length - 1 && acc + d[idx] <= elapsed) { acc += d[idx]; idx++; }
-        if (idx != gifIndex)
+        bool changed = idx != gifIndex;
+        bool fadeEnded = false;
+        if (changed)
         {
+            // Slideshows get a short alpha crossfade instead of a hard cut —
+            // the dwell is seconds long, so ~7 cheap blend steps cost nothing.
+            if (gifIsSlides) { crossFrom = gifFrames[gifIndex]; crossStart = Environment.TickCount; }
             gifIndex = idx;
-            source = gifFrames[gifIndex];
-            foreach (WindowSlot slot in slots.ToArray())
-                if (ShownFor(slot)) { slot.SetImage(source); slot.Present(); }
         }
-        frameTimer.Interval = Math.Max(15, acc + d[gifIndex] - elapsed);
+        Bitmap frame = gifFrames[gifIndex];
+        if (crossFrom != null)
+        {
+            int t = unchecked((int)(Environment.TickCount - crossStart));
+            if (t >= CrossMs) { crossFrom = null; fadeEnded = !changed; }
+            else frame = BlendFrames(crossFrom, frame, t / (float)CrossMs);
+        }
+        if (changed || crossFrom != null || fadeEnded)
+        {
+            source = frame;
+            foreach (WindowSlot slot in slots.ToArray())
+                if (ShownFor(slot)) { slot.SetAnimatedImage(source); slot.Present(); }
+        }
+        frameTimer.Interval = crossFrom != null ? 60 : Math.Max(15, acc + d[gifIndex] - elapsed);
     }
 
     // Delays with the profile's pacing applied: gifSpeed scales every delay
@@ -866,8 +938,71 @@ internal sealed class AppSession : IDisposable
     // battery-saver switch is on; either way the wallpaper keeps its last frame.
     private bool PumpPaused()
     {
-        return profile.GifPause ||
-            (profile.BattSaver && SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline);
+        return profile.GifPause || PauseHotkey ||
+            (profile.BattSaver && SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline) ||
+            (profile.PauseBg && !AnyFocused());
+    }
+
+    // Win+Alt+P: the helper flips this in-memory flag on every session at once.
+    internal void SetPauseHotkey(bool on)
+    {
+        if (PauseHotkey == on) return;
+        PauseHotkey = on;
+        UpdatePump();
+    }
+
+    // True while the foreground window belongs to one of the app's own processes.
+    private bool AnyFocused()
+    {
+        IntPtr fg = Native.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        uint pid;
+        Native.GetWindowThreadProcessId(fg, out pid);
+        foreach (WindowSlot slot in slots) if (slot.Pid == pid) return true;
+        return false;
+    }
+
+    // The crosshair poll: only worth ticking while a style is on; the tick
+    // itself hides everything the moment no slot is shown.
+    private void UpdateCrosshair()
+    {
+        bool want = active && !shuttingDown && profile.Crosshair != "off" && slots.Count > 0;
+        if (want && !crossTimer.Enabled) crossTimer.Start();
+        else if (!want && crossTimer.Enabled) { crossTimer.Stop(); HideCrosshairs(); }
+    }
+
+    private void CrossTick()
+    {
+        if (!active || shuttingDown || profile.Crosshair == "off" || !AnyShown()) { HideCrosshairs(); return; }
+        Native.Point pt;
+        if (!Native.GetCursorPos(out pt)) return;
+        string style = profile.Crosshair;
+        Color color = CrossColor();
+        if (style != crossStyle || color != crossColor)
+        {
+            crossStyle = style; crossColor = color;
+            foreach (WindowSlot slot in slots) slot.ResetCrosshair();
+        }
+        foreach (WindowSlot slot in slots.ToArray()) slot.TrackCrosshair(pt);
+    }
+
+    private void HideCrosshairs()
+    {
+        foreach (WindowSlot slot in slots) slot.HideCrosshair();
+    }
+
+    private Color CrossColor()
+    {
+        if (profile.CrosshairColor.Length == 7)
+        {
+            try { return ColorTranslator.FromHtml(profile.CrosshairColor); } catch (Exception) { }
+        }
+        string accent = profile.Text.Accent ?? "";
+        if (accent.Length >= 4)
+        {
+            try { return ColorTranslator.FromHtml(accent); } catch (Exception) { }
+        }
+        return Color.FromArgb(255, 46, 230, 120);
     }
 
     private void UpdatePump()
@@ -985,6 +1120,7 @@ internal sealed class AppSession : IDisposable
         slot.SetTransitions(ShownFor(slot));
         slot.HookEvents();
         LogAttached(window, pid);
+        UpdateCrosshair();
         return true;
     }
 
@@ -994,6 +1130,8 @@ internal sealed class AppSession : IDisposable
         slots.Clear();
         rotatedThisAttach = false;
         capLogged = false;
+        HideCrosshairs();
+        UpdateCrosshair();
         timer.Interval = WaitingInterval;
     }
 
@@ -1115,6 +1253,7 @@ internal sealed class AppSession : IDisposable
                 return true;
             }, IntPtr.Zero);
         }
+        UpdateCrosshair();
         if (slots.Count == 0) { timer.Interval = WaitingInterval; return; }
         // A copy: Present can drop its own slot when the window dies mid-tick.
         foreach (WindowSlot slot in slots.ToArray()) slot.Present();
@@ -1145,6 +1284,7 @@ internal sealed class AppSession : IDisposable
         private IntPtr locationHook, moveSizeHook;
         private PreviewArtworkChild child;
         private ArtworkWindow artwork;
+        private CrosshairChild crosshair;
         private bool childUnavailable, changedTransitions;
         private int previousTransitions;
         internal bool FullscreenHidden;
@@ -1158,6 +1298,29 @@ internal sealed class AppSession : IDisposable
         }
 
         internal bool HasRenderer { get { return child != null || artwork != null; } }
+
+        // The crosshair follows the cursor only while it is inside this window.
+        internal void TrackCrosshair(Native.Point pt)
+        {
+            Native.Rect rect;
+            var origin = new Native.Point();
+            if (!Native.GetClientRect(Window, out rect) || !Native.ClientToScreen(Window, ref origin))
+            { HideCrosshair(); return; }
+            int x = pt.X - origin.X, y = pt.Y - origin.Y;
+            if (x < 0 || y < 0 || x >= rect.Right || y >= rect.Bottom) { HideCrosshair(); return; }
+            if (crosshair == null)
+            {
+                try { crosshair = new CrosshairChild(Window, session.app.Product); }
+                catch { return; }
+            }
+            crosshair.Track(session.crossStyle, session.crossColor,
+                pt.X - CrosshairChild.Box / 2, pt.Y - CrosshairChild.Box / 2,
+                x - CrosshairChild.Box / 2, y - CrosshairChild.Box / 2);
+        }
+
+        internal void HideCrosshair() { if (crosshair != null) crosshair.Hide(); }
+
+        internal void ResetCrosshair() { if (crosshair != null) { crosshair.Dispose(); crosshair = null; } }
 
         internal bool Exists()
         {
@@ -1174,6 +1337,14 @@ internal sealed class AppSession : IDisposable
         internal void SetImage(Bitmap image)
         {
             if (child != null) child.SetImage(image);
+            if (artwork != null) artwork.SetImage(image);
+        }
+
+        // A gif/APNG/slideshow frame: the child uses its persistent-DIB path so
+        // the per-frame cost stays low, including through per-pixel looks.
+        internal void SetAnimatedImage(Bitmap image)
+        {
+            if (child != null) child.SetAnimatedImage(image);
             if (artwork != null) artwork.SetImage(image);
         }
 
@@ -1288,6 +1459,7 @@ internal sealed class AppSession : IDisposable
             moveSizeHook = locationHook = IntPtr.Zero;
             if (child != null) { child.Dispose(); child = null; }
             if (artwork != null) { artwork.Dispose(); artwork = null; }
+            if (crosshair != null) { crosshair.Dispose(); crosshair = null; }
         }
     }
 
@@ -1303,6 +1475,7 @@ internal sealed class AppSession : IDisposable
         if (faultTimer != null) faultTimer.Dispose();
         reloadTimer.Dispose();
         frameTimer.Dispose();
+        crossTimer.Dispose();
         driftTimer.Dispose();
         FreeGif();
         if (watcher != null) watcher.Dispose();
@@ -1524,6 +1697,338 @@ internal sealed class AppSession : IDisposable
         }
     }
 
+    // A 48x48 layered child window carrying the custom crosshair. Its surface
+    // is painted once per (style, colour); movement is a plain SetWindowPos so
+    // the 30 Hz cursor poll costs no repaints.
+    private sealed class CrosshairChild : NativeWindow, IDisposable
+    {
+        internal const int Box = 48;
+        private string style;
+        private Color color;
+        private bool shown;
+
+        internal CrosshairChild(IntPtr parent, string product)
+        {
+            CreateHandle(new CreateParams {
+                Parent = parent, Caption = product + " crosshair", Style = 0x40000000,
+                ExStyle = 0x80000 | 0x20 | 0x08000000 | 0x4,
+                X = 0, Y = 0, Width = 1, Height = 1 });
+        }
+
+        // screenX/screenY position the layered surface (ULW is screen space);
+        // clientX/clientY position the child inside the app window.
+        internal void Track(string style, Color color, int screenX, int screenY, int clientX, int clientY)
+        {
+            if (Handle == IntPtr.Zero) return;
+            if (style != this.style || color != this.color)
+            {
+                IntPtr dib = ArtworkLook.AlphaDib(CrosshairArt.Pixels(style, color, Box), Box, Box);
+                IntPtr dc = Native.CreateCompatibleDC(IntPtr.Zero);
+                IntPtr old = IntPtr.Zero;
+                var at = new Native.Point { X = screenX, Y = screenY };
+                var size = new Native.Size { Width = Box, Height = Box };
+                var from = new Native.Point();
+                var blend = new Native.Blend { ConstantAlpha = 255, AlphaFormat = 1 };
+                bool painted = false;
+                try
+                {
+                    if (dc != IntPtr.Zero) old = Native.SelectObject(dc, dib);
+                    if (old != IntPtr.Zero && old != new IntPtr(-1))
+                        painted = Native.UpdateLayeredWindow(Handle, IntPtr.Zero, ref at, ref size, dc, ref from, 0, ref blend, 2);
+                }
+                finally
+                {
+                    if (old != IntPtr.Zero && old != new IntPtr(-1)) Native.SelectObject(dc, old);
+                    if (dc != IntPtr.Zero) Native.DeleteDC(dc);
+                    if (dib != IntPtr.Zero) Native.DeleteObject(dib);
+                }
+                if (!painted) return; // retry on the next tick instead of staying blank
+                this.style = style; this.color = color;
+            }
+            Native.SetWindowPos(Handle, IntPtr.Zero, clientX, clientY, 0, 0,
+                Native.NoSize | Native.NoActivate | Native.NoZOrder | Native.Show);
+            shown = true;
+        }
+
+        internal void Hide()
+        {
+            if (shown && Handle != IntPtr.Zero) Native.ShowWindow(Handle, 0);
+            shown = false;
+        }
+
+        public void Dispose() { if (Handle != IntPtr.Zero) DestroyHandle(); }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x84) { m.Result = new IntPtr(-1); return; } // HTTRANSPARENT
+            if (m.Msg == 0x21) { m.Result = new IntPtr(3); return; } // MA_NOACTIVATE
+            base.WndProc(ref m);
+        }
+    }
+
+    // Premultiplied BGRA pixels for the crosshair styles: a dark under-stroke so
+    // the reticle reads on any wallpaper, then the chosen colour on top.
+    private static class CrosshairArt
+    {
+        // Decoded cursor-pack bitmaps, reused across ticks; keyed by file path.
+        private static readonly Dictionary<string, Bitmap> cache = new Dictionary<string, Bitmap>();
+
+        internal static byte[] Pixels(string style, Color color, int size)
+        {
+            if (style.StartsWith("img:")) return ImagePixels(style, size);
+            using (var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    float c = size / 2f;
+                    using (var darkPen = new Pen(Color.FromArgb(190, 0, 0, 0), 4.5f))
+                    using (var darkBrush = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
+                        Shapes(g, style, c, darkPen, darkBrush);
+                    using (var pen = new Pen(color, 2.5f))
+                    using (var brush = new SolidBrush(color))
+                        Shapes(g, style, c, pen, brush);
+                }
+                var rect = new Rectangle(0, 0, size, size);
+                BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                var px = new byte[size * size * 4];
+                try { Marshal.Copy(data.Scan0, px, 0, px.Length); }
+                finally { bmp.UnlockBits(data); }
+                for (int i = 0; i < px.Length; i += 4)
+                {
+                    int a = px[i + 3];
+                    px[i] = (byte)(px[i] * a / 255);
+                    px[i + 1] = (byte)(px[i + 1] * a / 255);
+                    px[i + 2] = (byte)(px[i + 2] * a / 255);
+                }
+                return px;
+            }
+        }
+
+        // A cursor-pack PNG composited into the layered surface: drawn at full
+        // box, the pack art already carries its own outline.
+        private static byte[] ImagePixels(string style, int size)
+        {
+            var px = new byte[size * size * 4];
+            string path = ThemeLibrary.CursorImage(style);
+            if (path == null) return px;
+            Bitmap src;
+            string key = path + "|" + File.GetLastWriteTimeUtc(path).Ticks;
+            if (!cache.TryGetValue(key, out src))
+            {
+                try
+                {
+                    // Copy off the file-bound image so pack PNGs are never held open.
+                    using (Image file = Image.FromFile(path)) src = new Bitmap(file);
+                    if (cache.Count >= 64) { foreach (Bitmap old in cache.Values) old.Dispose(); cache.Clear(); }
+                    cache[key] = src;
+                }
+                catch { return px; }
+            }
+            using (var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(Color.Transparent);
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    float scale = Math.Min((size - 4f) / src.Width, (size - 4f) / src.Height);
+                    float w = src.Width * scale, hgt = src.Height * scale;
+                    g.DrawImage(src, (size - w) / 2f, (size - hgt) / 2f, w, hgt);
+                }
+                var rect = new Rectangle(0, 0, size, size);
+                BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try { Marshal.Copy(data.Scan0, px, 0, px.Length); }
+                finally { bmp.UnlockBits(data); }
+            }
+            for (int i = 0; i < px.Length; i += 4)
+            {
+                int a = px[i + 3];
+                px[i] = (byte)(px[i] * a / 255);
+                px[i + 1] = (byte)(px[i + 1] * a / 255);
+                px[i + 2] = (byte)(px[i + 2] * a / 255);
+            }
+            return px;
+        }
+
+        private static void Shapes(Graphics g, string style, float c, Pen pen, Brush brush)
+        {
+            switch (style)
+            {
+                case "dot":
+                    g.FillEllipse(brush, c - 3, c - 3, 6, 6);
+                    g.DrawEllipse(pen, c - 8, c - 8, 16, 16);
+                    break;
+                case "cross":
+                    g.DrawLine(pen, c - 11, c, c - 4, c);
+                    g.DrawLine(pen, c + 4, c, c + 11, c);
+                    g.DrawLine(pen, c, c - 11, c, c - 4);
+                    g.DrawLine(pen, c, c + 4, c, c + 11);
+                    g.FillEllipse(brush, c - 1.5f, c - 1.5f, 3, 3);
+                    break;
+                case "circle":
+                    g.DrawEllipse(pen, c - 8, c - 8, 16, 16);
+                    g.FillEllipse(brush, c - 2.5f, c - 2.5f, 5, 5);
+                    break;
+                case "ring":
+                    g.DrawEllipse(pen, c - 12, c - 12, 24, 24);
+                    break;
+                case "chevron":
+                    g.DrawLine(pen, c - 8, c - 5, c, c + 3);
+                    g.DrawLine(pen, c + 8, c - 5, c, c + 3);
+                    g.FillEllipse(brush, c - 2, c - 7.5f, 4, 4);
+                    break;
+                case "diamond":
+                    g.DrawLine(pen, c, c - 9, c + 9, c);
+                    g.DrawLine(pen, c + 9, c, c, c + 9);
+                    g.DrawLine(pen, c, c + 9, c - 9, c);
+                    g.DrawLine(pen, c - 9, c, c, c - 9);
+                    g.FillEllipse(brush, c - 2, c - 2, 4, 4);
+                    break;
+                case "star":
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = i * Math.PI / 4;
+                        float x1 = c + (float)(Math.Cos(a) * 4), y1 = c + (float)(Math.Sin(a) * 4);
+                        float x2 = c + (float)(Math.Cos(a) * 9), y2 = c + (float)(Math.Sin(a) * 9);
+                        g.DrawLine(pen, x1, y1, x2, y2);
+                    }
+                    g.FillEllipse(brush, c - 1.5f, c - 1.5f, 3, 3);
+                    break;
+                case "scope":
+                    g.DrawEllipse(pen, c - 10, c - 10, 20, 20);
+                    g.DrawLine(pen, c - 14, c, c - 10, c);
+                    g.DrawLine(pen, c + 10, c, c + 14, c);
+                    g.DrawLine(pen, c, c - 14, c, c - 10);
+                    g.DrawLine(pen, c, c + 10, c, c + 14);
+                    g.FillEllipse(brush, c - 2, c - 2, 4, 4);
+                    break;
+                case "cat":
+                    g.DrawEllipse(pen, c - 10, c - 8, 20, 17);
+                    g.DrawLine(pen, c - 8, c - 4, c - 8, c - 13); g.DrawLine(pen, c - 8, c - 13, c - 3, c - 9);
+                    g.DrawLine(pen, c + 8, c - 4, c + 8, c - 13); g.DrawLine(pen, c + 8, c - 13, c + 3, c - 9);
+                    g.FillEllipse(brush, c - 5, c - 1, 2.5f, 2.5f);
+                    g.FillEllipse(brush, c + 2.5f, c - 1, 2.5f, 2.5f);
+                    g.DrawLine(pen, c - 1, c + 1.5f, c, c + 2.5f);
+                    g.DrawLine(pen, c, c + 2.5f, c + 1, c + 1.5f);
+                    g.DrawLine(pen, c - 12, c + 1, c - 8.5f, c + 0.5f);
+                    g.DrawLine(pen, c - 12, c + 3.5f, c - 8.5f, c + 3);
+                    g.DrawLine(pen, c + 12, c + 1, c + 8.5f, c + 0.5f);
+                    g.DrawLine(pen, c + 12, c + 3.5f, c + 8.5f, c + 3);
+                    break;
+                case "paw":
+                    g.DrawEllipse(pen, c - 8, c + 1, 16, 10);
+                    g.DrawEllipse(pen, c - 9.5f, c - 7, 5, 5);
+                    g.DrawEllipse(pen, c - 2.5f, c - 9, 5, 5);
+                    g.DrawEllipse(pen, c + 4.5f, c - 7, 5, 5);
+                    break;
+                case "heart":
+                    g.DrawArc(pen, c - 9, c - 7, 9, 9, 180, 180);
+                    g.DrawArc(pen, c, c - 7, 9, 9, 180, 180);
+                    g.DrawLine(pen, c - 9, c - 2.5f, c, c + 10);
+                    g.DrawLine(pen, c + 9, c - 2.5f, c, c + 10);
+                    break;
+                case "bow":
+                    g.DrawLine(pen, c - 3, c, c - 11, c - 6); g.DrawLine(pen, c - 11, c - 6, c - 11, c + 6); g.DrawLine(pen, c - 11, c + 6, c - 3, c);
+                    g.DrawLine(pen, c + 3, c, c + 11, c - 6); g.DrawLine(pen, c + 11, c - 6, c + 11, c + 6); g.DrawLine(pen, c + 11, c + 6, c + 3, c);
+                    g.FillEllipse(brush, c - 2.5f, c - 2.5f, 5, 5);
+                    break;
+                case "ghost":
+                    g.DrawArc(pen, c - 9, c - 10, 18, 16, 180, 180);
+                    g.DrawLine(pen, c - 9, c - 2, c - 9, c + 6);
+                    g.DrawLine(pen, c + 9, c - 2, c + 9, c + 6);
+                    g.DrawLine(pen, c - 9, c + 6, c - 6, c + 9); g.DrawLine(pen, c - 6, c + 9, c - 3, c + 6);
+                    g.DrawLine(pen, c - 3, c + 6, c, c + 9); g.DrawLine(pen, c, c + 9, c + 3, c + 6);
+                    g.DrawLine(pen, c + 3, c + 6, c + 6, c + 9); g.DrawLine(pen, c + 6, c + 9, c + 9, c + 6);
+                    g.FillEllipse(brush, c - 5, c - 4, 3, 3);
+                    g.FillEllipse(brush, c + 2, c - 4, 3, 3);
+                    break;
+                case "bunny":
+                    g.DrawEllipse(pen, c - 7.5f, c - 14, 5.5f, 13);
+                    g.DrawEllipse(pen, c + 2, c - 14, 5.5f, 13);
+                    g.DrawEllipse(pen, c - 7, c - 2, 14, 13);
+                    g.FillEllipse(brush, c - 1.5f, c + 3, 3, 3);
+                    break;
+                case "crown":
+                    g.DrawLine(pen, c - 10, c + 5, c - 10, c - 4);
+                    g.DrawLine(pen, c - 10, c - 4, c - 5, c + 1);
+                    g.DrawLine(pen, c - 5, c + 1, c, c - 7);
+                    g.DrawLine(pen, c, c - 7, c + 5, c + 1);
+                    g.DrawLine(pen, c + 5, c + 1, c + 10, c - 4);
+                    g.DrawLine(pen, c + 10, c - 4, c + 10, c + 5);
+                    g.DrawLine(pen, c - 10, c + 5, c + 10, c + 5);
+                    break;
+                case "flower":
+                    for (int i = 0; i < 5; i++)
+                    {
+                        double a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+                        float px = c + (float)(Math.Cos(a) * 7), py = c + (float)(Math.Sin(a) * 7);
+                        g.DrawEllipse(pen, px - 4, py - 4, 8, 8);
+                    }
+                    g.FillEllipse(brush, c - 2.5f, c - 2.5f, 5, 5);
+                    break;
+                case "sparkle":
+                    g.DrawPolygon(pen, new PointF[] {
+                        new PointF(c, c - 14), new PointF(c + 3, c - 3), new PointF(c + 14, c),
+                        new PointF(c + 3, c + 3), new PointF(c, c + 14), new PointF(c - 3, c + 3),
+                        new PointF(c - 14, c), new PointF(c - 3, c - 3) });
+                    g.FillEllipse(brush, c - 1.5f, c - 1.5f, 3, 3);
+                    break;
+                case "bolt":
+                    g.DrawPolygon(pen, new PointF[] {
+                        new PointF(c + 3, c - 14), new PointF(c - 6, c + 2), new PointF(c - 1, c + 2),
+                        new PointF(c - 3, c + 14), new PointF(c + 6, c - 2), new PointF(c + 1, c - 2) });
+                    break;
+                case "moon":
+                    g.DrawArc(pen, c - 9, c - 11, 18, 22, 60, 240);
+                    g.DrawArc(pen, c - 1, c - 9, 14, 18, 300, 240);
+                    break;
+                case "skull":
+                    g.DrawEllipse(pen, c - 8, c - 10, 16, 15);
+                    g.DrawRectangle(pen, c - 5, c + 3, 10, 8);
+                    g.DrawLine(pen, c - 2, c + 3, c - 2, c + 11);
+                    g.DrawLine(pen, c + 2, c + 3, c + 2, c + 11);
+                    g.FillEllipse(brush, c - 5, c - 4, 3.5f, 3.5f);
+                    g.FillEllipse(brush, c + 1.5f, c - 4, 3.5f, 3.5f);
+                    break;
+                case "music":
+                    g.DrawLine(pen, c + 5, c - 12, c + 5, c + 6);
+                    g.DrawLine(pen, c + 5, c - 12, c + 10, c - 8);
+                    g.DrawEllipse(pen, c - 6, c + 2, 11, 8);
+                    g.DrawLine(pen, c - 1, c - 8, c - 1, c + 4);
+                    g.DrawLine(pen, c - 1, c - 8, c + 5, c - 12);
+                    break;
+                case "cherry":
+                    g.DrawEllipse(pen, c - 10, c + 2, 9, 9);
+                    g.DrawEllipse(pen, c + 2, c + 3, 9, 9);
+                    g.DrawLine(pen, c - 5, c + 3, c + 4, c - 11);
+                    g.DrawLine(pen, c + 7, c + 4, c + 4, c - 11);
+                    g.DrawLine(pen, c + 4, c - 11, c + 10, c - 9);
+                    break;
+                case "mushroom":
+                    g.DrawArc(pen, c - 11, c - 11, 22, 16, 180, 180);
+                    g.DrawLine(pen, c - 11, c - 3, c + 11, c - 3);
+                    g.DrawLine(pen, c - 5, c - 3, c - 4, c + 10);
+                    g.DrawLine(pen, c + 5, c - 3, c + 4, c + 10);
+                    g.DrawLine(pen, c - 4, c + 10, c + 4, c + 10);
+                    g.FillEllipse(brush, c - 5, c - 9, 3, 3);
+                    g.FillEllipse(brush, c + 2, c - 8, 3, 3);
+                    break;
+                case "snowflake":
+                    g.DrawLine(pen, c, c - 12, c, c + 12);
+                    g.DrawLine(pen, c - 10, c - 6, c + 10, c + 6);
+                    g.DrawLine(pen, c - 10, c + 6, c + 10, c - 6);
+                    g.DrawLine(pen, c - 2.5f, c - 10, c, c - 12); g.DrawLine(pen, c, c - 12, c + 2.5f, c - 10);
+                    g.DrawLine(pen, c - 2.5f, c + 10, c, c + 12); g.DrawLine(pen, c, c + 12, c + 2.5f, c + 10);
+                    break;
+                default: // a bare small dot
+                    g.FillEllipse(brush, c - 3, c - 3, 6, 6);
+                    break;
+            }
+        }
+
+
+    }
+
     // Opaque JPEG pixels in a reusable GDI bitmap. Global opacity is applied at composition.
     private sealed class Surface : IDisposable
     {
@@ -1597,6 +2102,7 @@ internal sealed class AppSession : IDisposable
         [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr window);
         [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr window);
         [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassName(IntPtr window, StringBuilder output, int length);
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
         [DllImport("user32.dll")] internal static extern bool GetClientRect(IntPtr window, out Rect rect);

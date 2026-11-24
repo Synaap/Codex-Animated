@@ -631,3 +631,33 @@ details[open] summary { margin-bottom: 6px; }
 @media (prefers-reduced-motion: reduce) {
   .btn, .row, .chip, .seg button, .switch, .switch::after, .input, .select, .name-field { transition: none; }
 }
+
+/* Slideshow editor strip */
+.slide-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.slide-cell { position: relative; width: 64px; height: 40px; border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.slide-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.slide-tools { position: absolute; inset: auto 0 0 0; display: flex; gap: 2px; justify-content: center; background: rgba(0,0,0,.5); opacity: 0; transition: opacity .12s; }
+.slide-cell:hover .slide-tools, .slide-cell:focus-within .slide-tools { opacity: 1; }
+.slide-tools .mini { background: none; border: 0; color: #fff; font-size: 12px; line-height: 1; padding: 2px 5px; cursor: pointer; }
+
+/* Crosshair gallery */
+.cross-bar { display: flex; gap: 12px; align-items: center; margin: 10px 0 18px; flex-wrap: wrap; }
+.cross-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
+.cross-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 8px; border: 1px solid var(--edge, #333); border-radius: 10px; background: var(--panel, rgba(255,255,255,.04)); color: var(--ink, #eee); cursor: pointer; }
+.cross-card.sel { border-color: var(--accent, #8ab4ff); }
+.cross-svg { width: 36px; height: 36px; stroke: currentColor; stroke-width: 2.5; fill: none; stroke-linecap: round; }
+.cross-name { font-size: 11.5px; }
+.cross-none { font-size: 22px; line-height: 36px; }
+.cross-img { width: 40px; height: 40px; object-fit: contain; }
+.cross-h { font-size: 12.5px; letter-spacing: .04em; opacity: .65; margin: 18px 0 8px; text-transform: uppercase; }
+.cross-pack-name { font-size: 15px; margin: 0; text-transform: capitalize; }
+.cross-card { position: relative; }
+.cross-del { position: absolute; top: 2px; right: 4px; border: 0; background: none; color: inherit; opacity: .45; font-size: 13px; cursor: pointer; padding: 2px 4px; }
+.cross-del:hover { opacity: 1; }
+.seg button { white-space: nowrap; }
+.cross-bar .seg { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; flex: 1 1 auto; }
+.cross-bar .seg::-webkit-scrollbar { height: 5px; }
+.cross-tabs { display: flex; gap: 4px; margin: 6px 0 12px; }
+
+.cross-cell { position: relative; display: grid; }
+.cross-cell > .cross-card { width: 100%; }

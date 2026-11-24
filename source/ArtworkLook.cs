@@ -480,8 +480,6 @@ internal static class ArtworkLook
     // the returned buffer is BGRA, top-down rows, stride = width*4.
     internal static byte[] AlphaPixels(Bitmap frame, Look look)
     {
-        byte[] columns = ClearColumns(frame.Width, look);
-        int glow = look == null ? 0 : Math.Max(0, Math.Min(100, look.Glow));
         var rect = new Rectangle(0, 0, frame.Width, frame.Height);
         BitmapData data = frame.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         byte[] px;
@@ -491,14 +489,25 @@ internal static class ArtworkLook
             Marshal.Copy(data.Scan0, px, 0, px.Length);
         }
         finally { frame.UnlockBits(data); }
-        int stride = frame.Width * 4;
+        ApplyPixelMask(px, frame.Width, frame.Height, look);
+        return px;
+    }
+
+    // The same per-pixel fold as AlphaPixels, on a BGRA buffer already in
+    // memory — the animated path renders frames straight into a DIB and runs
+    // this in place. stride is exactly width*4.
+    internal static void ApplyPixelMask(byte[] px, int width, int height, Look look)
+    {
+        byte[] columns = ClearColumns(width, look);
+        int glow = look == null ? 0 : Math.Max(0, Math.Min(100, look.Glow));
+        int stride = width * 4;
         int vig = look == null ? 0 : Math.Max(0, Math.Min(100, look.Vignette));
-        double w2 = Math.Max(1, frame.Width - 1) / 2.0, h2 = Math.Max(1, frame.Height - 1) / 2.0;
-        for (int y = 0; y < frame.Height; y++)
+        double w2 = Math.Max(1, width - 1) / 2.0, h2 = Math.Max(1, height - 1) / 2.0;
+        for (int y = 0; y < height; y++)
         {
             int row = y * stride;
             double cy = (y - h2) / h2;
-            for (int x = 0; x < frame.Width; x++)
+            for (int x = 0; x < width; x++)
             {
                 int i = row + (x << 2);
                 int a = columns != null ? columns[x] : 255;
@@ -524,7 +533,6 @@ internal static class ArtworkLook
                 px[i + 3] = (byte)a;
             }
         }
-        return px;
     }
 
     // A 32bpp DIB section carrying the premultiplied pixels. UpdateLayeredWindow
@@ -550,12 +558,17 @@ internal static class ArtworkLook
     // section's DC (the animation fast path). Delete with DeleteObject.
     internal static IntPtr EmptyDib(int width, int height)
     {
+        IntPtr bits;
+        return EmptyDib(width, height, out bits);
+    }
+
+    internal static IntPtr EmptyDib(int width, int height, out IntPtr bits)
+    {
         var info = new int[10];
         info[0] = 40;
         info[1] = width;
         info[2] = -height;
         info[3] = (32 << 16) | 1;
-        IntPtr bits;
         IntPtr dib = CreateDIBSection(IntPtr.Zero, info, 0, out bits, IntPtr.Zero, 0);
         if (dib == IntPtr.Zero) throw new Win32Exception();
         return dib;

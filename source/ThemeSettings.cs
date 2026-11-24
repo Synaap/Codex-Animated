@@ -338,6 +338,35 @@ internal sealed class AppProfile
     internal bool BattSaver = false;
     // Seconds each slide shows for a slides\ theme (5..3600, default 30).
     internal int SlideSec = 30;
+    // When on, the frame pump also pauses while none of the app's windows is
+    // the foreground window — background apps keep the last frame.
+    internal bool PauseBg = false;
+    // A custom crosshair drawn at the cursor while it is inside the app's
+    // window: "off", "dot", "cross", "circle" or "scope". crosshairColor is a
+    // #RRGGBB hex or "" for the theme accent.
+    internal string Crosshair = "off";
+    internal string CrosshairColor = "";
+    // Whether settings.ini carried a splash= key when loaded, and what that
+    // load resolved to: Save only writes the key when it was there or changed,
+    // so a profile loaded without the custom-app flag never turns a custom
+    // app's default-off animation on.
+    private bool splashKeyPresent, splashLoaded;
+
+    // The crosshair preset ids, in gallery order.
+    internal static readonly string[] CrosshairStyles = {
+        "dot", "cross", "circle", "ring", "scope", "chevron", "diamond", "star",
+        "cat", "paw", "heart", "bow", "ghost", "bunny", "crown", "flower",
+        "sparkle", "bolt", "moon", "skull", "music", "cherry", "mushroom", "snowflake" };
+
+    internal static string NormalizeCrosshair(string value)
+    {
+        string v = (value ?? "").Trim().ToLowerInvariant();
+        foreach (string s in CrosshairStyles) if (s == v) return v;
+        // Image pointers: img:<pack>/<file>, both lowercase [a-z0-9_-].
+        if (v.StartsWith("img:") && System.Text.RegularExpressions.Regex.IsMatch(
+            v, @"^img:[a-z0-9_-]+/[a-z0-9_-]+$")) return v;
+        return "off";
+    }
 
     private AppProfile(string root) { Root = root; }
 
@@ -359,6 +388,8 @@ internal sealed class AppProfile
         profile.SplashOnStart = customApp ?
             string.Equals((ini.Get("splash") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase) :
             !string.Equals((ini.Get("splash") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
+        profile.splashKeyPresent = ini.Get("splash") != null;
+        profile.splashLoaded = profile.SplashOnStart;
         profile.Watch = !string.Equals((ini.Get("watch") ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase);
         profile.Speed = Look.Number(ini, "speed", 1, 1, 3);
         string style = SplashText.NormalizeStyle(ini.Get("style"));
@@ -380,6 +411,10 @@ internal sealed class AppProfile
         profile.GifPause = string.Equals((ini.Get("gifPause") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
         profile.BattSaver = string.Equals((ini.Get("battSaver") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
         profile.SlideSec = Look.Number(ini, "slideSec", 30, 5, 3600);
+        profile.PauseBg = string.Equals((ini.Get("pauseBg") ?? "").Trim(), "on", StringComparison.OrdinalIgnoreCase);
+        profile.Crosshair = NormalizeCrosshair(ini.Get("crosshair"));
+        string crossColor = (ini.Get("crosshairColor") ?? "").Trim();
+        profile.CrosshairColor = System.Text.RegularExpressions.Regex.IsMatch(crossColor, "^#[0-9a-fA-F]{6}$") ? crossColor : "";
         return profile;
     }
 
@@ -403,7 +438,7 @@ internal sealed class AppProfile
             ini.Set("theme", Theme ?? "");
             Look.Write(ini);
             Text.Write(ini);
-            ini.Set("splash", SplashOnStart ? "on" : "off");
+            if (splashKeyPresent || SplashOnStart != splashLoaded) ini.Set("splash", SplashOnStart ? "on" : "off");
             ini.Set("watch", Watch ? "on" : "off");
             ini.Set("speed", Math.Max(1, Math.Min(3, Speed)).ToString(CultureInfo.InvariantCulture));
             // The effective style lives on the same key the theme's choice uses; the
@@ -426,6 +461,9 @@ internal sealed class AppProfile
             ini.Set("gifPause", GifPause ? "on" : "off");
             ini.Set("battSaver", BattSaver ? "on" : "off");
             ini.Set("slideSec", Math.Max(5, Math.Min(3600, SlideSec)).ToString(CultureInfo.InvariantCulture));
+            ini.Set("pauseBg", PauseBg ? "on" : "off");
+            ini.Set("crosshair", Crosshair ?? "off");
+            ini.Set("crosshairColor", CrosshairColor ?? "");
             ini.Save(path);
         });
     }

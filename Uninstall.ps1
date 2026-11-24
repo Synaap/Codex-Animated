@@ -101,6 +101,34 @@ try {
         'Obsidian Animated', 'Animated Launchers' |
         ForEach-Object { Join-Path $env:LOCALAPPDATA $_ }
     if ($RemoveData) {
+        # A pointer pack applied as the Windows cursor scheme points into the data
+        # folder; put the saved scheme back first so no pointer file goes missing.
+        $cursorRoot = Join-Path $env:LOCALAPPDATA 'Animated Launchers\Cursors'
+        $cursorKey = 'HKCU:\Control Panel\Cursors'
+        $cursorRoles = 'Arrow', 'IBeam', 'Hand', 'Help', 'Wait', 'AppStarting', 'Crosshair', 'No', 'NWPen',
+            'SizeAll', 'SizeNESW', 'SizeNS', 'SizeNWSE', 'SizeWE', 'UpArrow', 'Person', 'Pin'
+        $ours = $false
+        foreach ($role in $cursorRoles) {
+            $value = (Get-ItemProperty -Path $cursorKey -Name $role -ErrorAction SilentlyContinue).$role
+            if ($value -and $value.StartsWith($cursorRoot, [StringComparison]::OrdinalIgnoreCase)) { $ours = $true }
+        }
+        if ($ours -and $PSCmdlet.ShouldProcess($cursorKey, 'restore the saved Windows cursor scheme')) {
+            $saved = @{}
+            $backupFile = Join-Path $cursorRoot 'backup.ini'
+            if (Test-Path -LiteralPath $backupFile) {
+                foreach ($line in [IO.File]::ReadAllLines($backupFile)) {
+                    if ($line -match '^role:([A-Za-z]+)=(.*)$') { $saved[$Matches[1]] = $Matches[2].Trim() }
+                }
+            }
+            foreach ($role in $cursorRoles) {
+                $restore = if ($saved.ContainsKey($role)) { $saved[$role] } else { '' }
+                $kind = if ($restore -like '*%*') { 'ExpandString' } else { 'String' }
+                Set-ItemProperty -Path $cursorKey -Name $role -Value $restore -Type $kind
+            }
+            Set-ItemProperty -Path $cursorKey -Name '(default)' -Value 'Windows Default'
+            Add-Type -Namespace AnimatedLaunchers -Name Cursors -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SystemParametersInfo(int action, int param, System.IntPtr value, int init);'
+            [void][AnimatedLaunchers.Cursors]::SystemParametersInfo(0x57, 0, [IntPtr]::Zero, 3)
+        }
         # Apps added in Theme Studio keep their settings in '<Name> Animated'; the
         # names are in custom-apps.ini, which goes away with the shared folder.
         $customList = Join-Path $env:LOCALAPPDATA 'Animated Launchers\custom-apps.ini'

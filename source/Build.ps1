@@ -12,7 +12,7 @@ try {
     $sources = '.\source\PortableStartup.cs', '.\source\ArtworkUpgrade.cs', '.\source\Launcher.cs',
         '.\source\AppSession.cs', '.\source\HelperHost.cs', '.\source\PreviewArtworkChild.cs',
         '.\source\WallpaperSettings.cs', '.\source\AppTable.cs', '.\source\ThemeSettings.cs',
-        '.\source\ThemeLibrary.cs', '.\source\StarterArt.cs',
+        '.\source\ThemeLibrary.cs', '.\source\CursorScheme.cs', '.\source\StarterArt.cs',
         '.\source\ArtworkLook.cs', '.\source\ImageCodec.cs',
         '.\source\SplashPage.cs', '.\source\DarkMenu.cs', '.\source\EmbeddedBundle.cs',
         '.\source\AppLog.cs', '.\source\QuietTime.cs', '.\source\CrashGuard.cs'
@@ -32,7 +32,7 @@ try {
     $studioResources += @('studio/index.html', 'studio/studio.css', 'studio/studio.js', 'studio/strings.js',
         'web/index.html', 'web/style.css', 'web/animation.js', 'web/assets/contours.js') | ForEach-Object { '/resource:{0},{0}' -f $_ }
     $studioSources = '.\source\ThemeStudio.cs', '.\source\ThemeStudio.Commands.cs', '.\source\AppTable.cs', '.\source\ThemeSettings.cs',
-        '.\source\ThemeLibrary.cs', '.\source\StarterArt.cs', '.\source\ThemePack.cs', '.\source\ArtworkLook.cs', '.\source\ImageCodec.cs',
+        '.\source\ThemeLibrary.cs', '.\source\CursorScheme.cs', '.\source\StarterArt.cs', '.\source\ThemePack.cs', '.\source\ArtworkLook.cs', '.\source\ImageCodec.cs',
         '.\source\SplashPage.cs', '.\source\EmbeddedBundle.cs'
     & $compiler /nologo /target:winexe /optimize+ /platform:x64 /out:ThemeStudio.exe /win32icon:source\launcher.ico /win32manifest:$studioManifest /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:Microsoft.VisualBasic.dll /r:Microsoft.Web.WebView2.Core.dll /r:Microsoft.Web.WebView2.WinForms.dll @studioResources @studioSources
     if ($LASTEXITCODE -ne 0) { throw "The ThemeStudio.exe build failed with exit code $LASTEXITCODE." }

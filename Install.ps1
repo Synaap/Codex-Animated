@@ -317,6 +317,22 @@ if (Test-Path -LiteralPath $themeSource) {
     }
 }
 
+# 8b. Seed cursor packs the same way (only when a cursors folder is next to this script)
+$cursorsLibrary = Join-Path $env:LOCALAPPDATA 'Animated Launchers\Cursors'
+$cursorSource = Join-Path $package 'cursors'
+if (Test-Path -LiteralPath $cursorSource) {
+    foreach ($pack in Get-ChildItem -LiteralPath $cursorSource -Directory) {
+        $target = Join-Path $cursorsLibrary $pack.Name
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        foreach ($src in Get-ChildItem -LiteralPath $pack.FullName -File) {
+            $dest = Join-Path $target $src.Name
+            if (Test-Path -LiteralPath $dest) { continue }
+            Copy-Item -LiteralPath $src.FullName -Destination $dest
+        }
+        Write-Output "seeded cursor pack $($pack.Name)"
+    }
+}
+
 # 9. Installed apps entry (Windows Settings > Apps > Installed apps)
 $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $entryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AnimatedLaunchers'

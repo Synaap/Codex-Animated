@@ -111,6 +111,8 @@
     S.themes = state.themes;
     S.apps = state.apps;
     S.looks = state.looks || S.looks || [];
+    S.crosshairs = state.crosshairs || S.crosshairs || [];
+    S.cursorPacks = state.cursorPacks || S.cursorPacks || [];
     S.screen = state.screen || S.screen;
     if (state.prefs) { S.prefs = state.prefs; setLang(forcedLang || S.prefs.lang || navigator.language); }
     if (state.version) S.version = state.version;
@@ -471,7 +473,8 @@
     return mock;
   }
 
-  function mockChat(name) {
+  function mockChat(rawName) {
+    const name = String(rawName).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const mock = h('div', { class: 'mock chat', 'aria-hidden': 'true' });
     const groups = [['Today', 'Fix the build', 'Summarize notes'], ['Yesterday', 'Trip plan', 'Draft a reply'], ['Previous 7 days', 'Regex help', 'Recipe ideas']];
     mock.innerHTML =
@@ -543,7 +546,9 @@
     // so the look's blur/dim/saturation get a CSS approximation instead. Tint
     // stays unapproximated — it needs a colour pass no filter can fake well.
     const filt = [];
-    if (!S.compare && (t.gif || t.apng)) {
+    const slideList = t.slideFiles || [];
+    const slideMode = !S.compare && !(t.gif || t.apng) && slideList.length > 1;
+    if (!S.compare && (t.gif || t.apng || slideMode)) {
       if (t.look.blur > 0) filt.push(`blur(${(t.look.blur * 0.15).toFixed(1)}px)`);
       const bright = 1 - (t.look.dim || 0) / 100 * 0.8 + (t.look.fade || 0) / 100 * 0.3;
       if (Math.abs(bright - 1) > 0.01) filt.push(`brightness(${bright.toFixed(2)})`);
@@ -551,7 +556,9 @@
     }
     ui.art.style.filter = filt.join(' ');
     const wanted = S.compare ? imgUrl('wallpaper', { theme: t.name, w: 1920, v: t.stamp }) :
-      (t.gif || t.apng) ? imgUrl('wallpaper', { theme: t.name, w: 1200, v: t.stamp }) : imgUrl('look', lookParams(t));
+      (t.gif || t.apng) ? imgUrl('wallpaper', { theme: t.name, w: 1200, v: t.stamp }) :
+      slideMode ? imgUrl('slide', { theme: t.name, n: (S.slideN || 0) % slideList.length, w: 1200, v: t.stamp }) :
+      imgUrl('look', lookParams(t));
     ui.wanted = wanted;
     if (initial) { ui.shown = ''; }
     if (wanted === ui.shown) return;
@@ -574,6 +581,49 @@
     probe.onload = () => done(true);
     probe.onerror = () => done(false);
     probe.src = url;
+  }
+
+  // Runs a bridge command and re-renders from the state it returns.
+  function runState(p) {
+    return p.then(state => { if (state && state.themes) { mergeState(state); buildAll(); } })
+      .catch(e => setStatus(e && e.message ? e.message : String(e), true));
+  }
+
+  // Slideshow themes cycle their slides in the live preview.
+  setInterval(() => {
+    const t = cur();
+    if (!t || S.view !== 'edit' || S.stage !== 'app' || S.compare) return;
+    const list = t.slideFiles || [];
+    if (list.length < 2 || t.gif || t.apng) return;
+    S.slideN = ((S.slideN || 0) + 1) % list.length;
+    updateArt(t);
+  }, 1400);
+
+  // The Slideshow section of the theme inspector: thumbnails of slides\ with
+  // reorder/remove tools, plus the add-pictures button.
+  function slidesGroup(t) {
+    const files = t.slideFiles || [];
+    const strip = h('div', { class: 'slide-strip' });
+    files.forEach((f, i) => {
+      strip.append(h('span', { class: 'slide-cell' },
+        h('img', { alt: f, src: imgUrl('slide', { theme: t.name, n: i, w: 96, v: t.stamp }) }),
+        h('span', { class: 'slide-tools' },
+          i > 0 ? h('button', { type: 'button', class: 'mini', text: '←', 'aria-label': _f('Move {0} earlier', f),
+            onclick: () => runState(call('moveSlide', { name: t.name, file: f, dir: 'up' })) }) : null,
+          i < files.length - 1 ? h('button', { type: 'button', class: 'mini', text: '→', 'aria-label': _f('Move {0} later', f),
+            onclick: () => runState(call('moveSlide', { name: t.name, file: f, dir: 'down' })) }) : null,
+          h('button', { type: 'button', class: 'mini', text: '×', 'aria-label': _f('Remove {0}', f),
+            onclick: () => runState(call('removeSlide', { name: t.name, file: f })) }))));
+    });
+    const group = h('section', { class: 'group', id: 'g-slides' }, h('h3', { text: _('Slideshow') }),
+      h('div', { class: 'field' },
+        files.length ? strip : h('p', { class: 'hint', text: _('No slides yet.') }),
+        h('div', { class: 'btn-row' }, button(_('Add slides…'), 'secondary', () => runState(call('addSlides', { name: t.name })), 0xE8B9)),
+        h('p', { class: 'hint', text: files.length > 1
+          ? _f('{0} pictures cycle in order — the pace is each app’s slide seconds.', files.length)
+          : _('Two or more pictures turn this theme into a slideshow.') })));
+    group.addEventListener('focusin', () => setStage('app'));
+    return group;
   }
 
   function layoutStage() {
@@ -936,6 +986,16 @@
       style.append(h('option', { value, text: name }));
     style.value = t.text.style || '';
     style.addEventListener('change', () => { t.text.style = style.value; onEdit('text'); });
+    const chimePick = h('select', { class: 'select', 'aria-label': _('Built-in chime') });
+    for (const [v, label] of [['bell', _('Bell')], ['blip', _('Blip')], ['whoosh', _('Whoosh')]])
+      chimePick.append(h('option', { value: v, text: label }));
+    const chime = h('div', { class: 'field' }, h('span', { class: 'label', text: _('Startup sound') }),
+      h('div', { class: 'btn-row' },
+        button(_('Pick .wav…'), 'secondary', () => runState(call('setChime', { name: t.name }))),
+        chimePick, button(_('Use'), 'quiet', () => runState(call('useChime', { name: t.name, kind: chimePick.value }))),
+        t.sound ? button(_('Play'), 'secondary', () => call('playChime', { name: t.name }).catch(e => setStatus(e.message, true))) : null,
+        t.sound ? button(_('Remove'), 'quiet', () => runState(call('clearChime', { name: t.name }))) : null),
+      h('p', { class: 'hint', text: t.sound ? _('A chime plays when the animation starts.') : _('Optional chime when the animation starts — pick a file or a built-in.') }));
     const startup = h('section', { class: 'group', id: 'g-startup' }, h('h3', { text: _('Startup animation') }),
       h('div', { class: 'field' }, h('span', { class: 'label', text: _('Style') }), style,
         h('p', { class: 'hint', text: _('The animation look this theme plays. Apps without their own style follow it.') })),
@@ -944,7 +1004,7 @@
       h('div', { class: 'field' }, h('span', { class: 'label', text: _('Subtitle') }), subtitle),
       ui.accentBox, avatar,
       h('div', { class: 'field' }, h('span', { class: 'label', text: _('Avatar frame') }), frame),
-      boot);
+      chime, boot);
     startup.addEventListener('focusin', () => setStage('splash'));
 
     const credit = h('input', { class: 'input', maxlength: 80, placeholder: _('Optional — artist or source'), value: t.text.credit || '', 'aria-label': _('Credit') });
@@ -964,7 +1024,7 @@
     const resetBtn = button(_('Reset'), 'quiet', resetToOpened, 0xE777);
     resetBtn.title = 'Back to how the theme was when it was opened';
     const history = h('div', { class: 'history' }, undoBtn, redoBtn, resetBtn);
-    return h('aside', { class: 'inspector' }, history, wallpaper, startup, sharing);
+    return h('aside', { class: 'inspector' }, history, wallpaper, slidesGroup(t), startup, sharing);
   }
 
   function exportTheme() {
@@ -1190,6 +1250,20 @@
       const battSaver = toggle(app.battSaver === true, _('Pause the animation while running on battery'), on =>
         call('setApp', { app: app.id, battSaver: on }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
       const slideSec = gifSel(app.slideSec, 'slideSec', [['5', _('5 s')], ['15', _('15 s')], ['30', _('30 s')], ['60', _('1 min')], ['300', _('5 min')]], _('Slide seconds'), 30);
+      const strSel = (val, key, opts, label) => {
+        const s = h('select', { class: 'select', 'aria-label': _f('{0} for {1}', label, app.name) });
+        for (const [v, text] of opts) s.append(h('option', { value: v, text }));
+        s.value = String(val ?? '');
+        s.addEventListener('change', () =>
+          call('setApp', { app: app.id, [key]: s.value }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+        return s;
+      };
+      const pauseBg = toggle(app.pauseBg === true, _('Pause the animation while the app isn’t focused'), on =>
+        call('setApp', { app: app.id, pauseBg: on }).then(apps => { S.apps = apps; }).catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true)));
+      const crosshair = strSel(app.crosshair || 'off', 'crosshair',
+        [['off', _('Off')]].concat((S.crosshairs || []).map(id => [id, crossLabel(id)])), _('Pointer'));
+      const crossColor = strSel(app.crosshairColor || '', 'crosshairColor',
+        [['', _('Theme accent')], ['#2ee678', _('Lime')], ['#35c7ff', _('Cyan')], ['#ff4fa3', _('Pink')], ['#ffb52e', _('Amber')], ['#ffffff', _('White')]], _('Pointer colour'));
       const ctl = (label, el) => h('div', { class: 'ctl' }, h('span', { class: 'label', text: label }), h('div', { class: 'ctl-row' }, el));
       const appInfo = app.custom ? h('div', { class: 'app-exe', text: app.exe }) : null;
       const statusLine = app.status ? h('div', { class: 'app-status' + (app.problem ? ' has-problem' : ''), text: appStatusText(app) }) : null;
@@ -1201,6 +1275,15 @@
           ctl(_('Night theme'), nightPick), ctl(_('Night hours'), nightHours), ctl(_('Night dim'), nightDim), ctl(_('Extra dim'), extraDim),
           ctl(_('Hide in full screen'), hideFs),
           ctl(_('Wallpaper speed'), gifSpeed), ctl(_('Frame cap'), gifCap), ctl(_('Freeze animation'), gifPause), ctl(_('On battery'), battSaver), ctl(_('Slide seconds'), slideSec),
+          ctl(_('Unfocused'), pauseBg), ctl(_('Pointer'), crosshair), ctl(_('Pointer colour'), crossColor),
+          ctl(_('Pointer all'), button(_('Change all'), 'quiet', () => {
+            const style = app.crosshair || 'off', col = app.crosshairColor || '';
+            let p = Promise.resolve();
+            for (const a of S.apps || [])
+              p = p.then(() => call('setApp', { app: a.id, crosshair: style, crosshairColor: col }).then(r => { S.apps = r; }));
+            p.then(() => { buildAll(); setAppsStatus(_('Pointer saved')); })
+             .catch(e => setAppsStatus(_f('Couldn\'t save. {0}', e.message), true));
+          })),
           removeBtn ? h('div', { class: 'ctl' }, h('span', { class: 'label', text: _('Your app') }), h('div', { class: 'ctl-row' }, removeBtn)) : null)));
     }
     ui.appsStatus = h('div', { class: 'status', role: 'status', 'aria-live': 'polite' });
@@ -1214,6 +1297,204 @@
         presetCtl())));
     wrap.append(ui.appsStatus);
     return wrap;
+  }
+
+  // ---------- crosshair gallery ----------
+  function crossLabel(id) {
+    return ({ dot: _('Dot'), cross: _('Cross'), circle: _('Circle'), ring: _('Ring'),
+      scope: _('Scope'), chevron: _('Chevron'), diamond: _('Diamond'), star: _('Star'),
+      cat: _('Cat'), paw: _('Paw'), heart: _('Heart'), bow: _('Bow'), ghost: _('Ghost'),
+      bunny: _('Bunny'), crown: _('Crown'), flower: _('Flower'),
+      sparkle: _('Sparkle'), bolt: _('Bolt'), moon: _('Moon'), skull: _('Skull'),
+      music: _('Music'), cherry: _('Cherry'), mushroom: _('Mushroom'), snowflake: _('Snowflake'),
+      off: _('Off') })[id] || id;
+  }
+
+  // An inline-SVG preview of a crosshair style, mirroring CrosshairArt.Shapes.
+  function crossSvg(id) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 48 48');
+    svg.setAttribute('class', 'cross-svg');
+    svg.setAttribute('aria-hidden', 'true');
+    const c = 24;
+    const el = (tag, attrs) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); svg.append(n); };
+    const ln = (x1, y1, x2, y2) => el('line', { x1, y1, x2, y2 });
+    const ring = r => el('circle', { cx: c, cy: c, r, fill: 'none' });
+    const dot = (r, dy) => el('circle', { cx: c, cy: c + (dy || 0), r, fill: 'currentColor', stroke: 'none' });
+    switch (id) {
+      case 'dot': dot(3); ring(8); break;
+      case 'cross': ln(c-11,c,c-4,c); ln(c+4,c,c+11,c); ln(c,c-11,c,c-4); ln(c,c+4,c,c+11); dot(1.5); break;
+      case 'circle': ring(8); dot(2.5); break;
+      case 'ring': ring(12); break;
+      case 'scope': ring(10); ln(c-14,c,c-10,c); ln(c+10,c,c+14,c); ln(c,c-14,c,c-10); ln(c,c+10,c,c+14); dot(2); break;
+      case 'chevron': ln(c-8,c-5,c,c+3); ln(c+8,c-5,c,c+3); dot(2,-7.5); break;
+      case 'diamond': ln(c,c-9,c+9,c); ln(c+9,c,c,c+9); ln(c,c+9,c-9,c); ln(c-9,c,c,c-9); dot(2); break;
+      case 'star': for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; ln(c+Math.cos(a)*4, c+Math.sin(a)*4, c+Math.cos(a)*9, c+Math.sin(a)*9); } dot(1.5); break;
+      case 'cat': el('ellipse', { cx: c, cy: c + 0.5, rx: 10, ry: 8.5, fill: 'none' });
+        el('path', { d: `M${c-8} ${c-4} L${c-8} ${c-13} L${c-3} ${c-9} M${c+8} ${c-4} L${c+8} ${c-13} L${c+3} ${c-9} M${c-1} ${c+1.5} L${c} ${c+2.5} L${c+1} ${c+1.5} M${c-12} ${c+1} L${c-8.5} ${c+0.5} M${c-12} ${c+3.5} L${c-8.5} ${c+3} M${c+12} ${c+1} L${c+8.5} ${c+0.5} M${c+12} ${c+3.5} L${c+8.5} ${c+3}`, fill: 'none' });
+        el('circle', { cx: c - 3.75, cy: c - 0.25, r: 1.25, fill: 'currentColor', stroke: 'none' });
+        el('circle', { cx: c + 3.75, cy: c - 0.25, r: 1.25, fill: 'currentColor', stroke: 'none' }); break;
+      case 'paw': el('ellipse', { cx: c, cy: c + 6, rx: 8, ry: 5, fill: 'none' });
+        el('circle', { cx: c - 7, cy: c - 4.5, r: 2.5, fill: 'none' });
+        el('circle', { cx: c, cy: c - 6.5, r: 2.5, fill: 'none' });
+        el('circle', { cx: c + 7, cy: c - 4.5, r: 2.5, fill: 'none' }); break;
+      case 'heart': el('path', { d: `M${c-9} ${c-2.5} A4.5 4.5 0 0 1 ${c} ${c-2.5} A4.5 4.5 0 0 1 ${c+9} ${c-2.5} L${c} ${c+10} Z`, fill: 'none' }); break;
+      case 'bow': el('path', { d: `M${c-3} ${c} L${c-11} ${c-6} L${c-11} ${c+6} Z M${c+3} ${c} L${c+11} ${c-6} L${c+11} ${c+6} Z`, fill: 'none' }); dot(2.5); break;
+      case 'ghost': el('path', { d: `M${c-9} ${c+6} L${c-9} ${c-2} A9 8 0 0 1 ${c+9} ${c-2} L${c+9} ${c+6} L${c+6} ${c+9} L${c+3} ${c+6} L${c} ${c+9} L${c-3} ${c+6} L${c-6} ${c+9} Z`, fill: 'none' });
+        el('circle', { cx: c - 3.5, cy: c - 2.5, r: 1.5, fill: 'currentColor', stroke: 'none' });
+        el('circle', { cx: c + 3.5, cy: c - 2.5, r: 1.5, fill: 'currentColor', stroke: 'none' }); break;
+      case 'bunny': el('ellipse', { cx: c - 4.75, cy: c - 7.5, rx: 2.75, ry: 6.5, fill: 'none' });
+        el('ellipse', { cx: c + 4.75, cy: c - 7.5, rx: 2.75, ry: 6.5, fill: 'none' });
+        el('ellipse', { cx: c, cy: c + 4.5, rx: 7, ry: 6.5, fill: 'none' }); dot(1.5, 4.5); break;
+      case 'crown': el('path', { d: `M${c-10} ${c+5} L${c-10} ${c-4} L${c-5} ${c+1} L${c} ${c-7} L${c+5} ${c+1} L${c+10} ${c-4} L${c+10} ${c+5} Z`, fill: 'none' }); break;
+      case 'flower': for (let i = 0; i < 5; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+        el('circle', { cx: c + Math.cos(a) * 7, cy: c + Math.sin(a) * 7, r: 4, fill: 'none' }); } dot(2.5); break;
+      case 'sparkle': el('polygon', { points: `${c},${c-14} ${c+3},${c-3} ${c+14},${c} ${c+3},${c+3} ${c},${c+14} ${c-3},${c+3} ${c-14},${c} ${c-3},${c-3}`, fill: 'none' }); dot(1.5); break;
+      case 'bolt': el('polygon', { points: `${c+3},${c-14} ${c-6},${c+2} ${c-1},${c+2} ${c-3},${c+14} ${c+6},${c-2} ${c+1},${c-2}`, fill: 'none' }); break;
+      case 'moon': el('path', { d: `M${c-2.5} ${c-10.5} A9 11 0 0 0 ${c-2.5} ${c+10.5} A9 9.5 0 0 1 ${c-2.5} ${c-10.5} Z`, fill: 'none' }); break;
+      case 'skull': el('ellipse', { cx: c, cy: c - 2.5, rx: 8, ry: 7.5, fill: 'none' });
+        el('rect', { x: c - 5, y: c + 3, width: 10, height: 8, fill: 'none' });
+        ln(c - 2, c + 3, c - 2, c + 11); ln(c + 2, c + 3, c + 2, c + 11);
+        el('circle', { cx: c - 3.25, cy: c - 2.25, r: 1.75, fill: 'currentColor', stroke: 'none' });
+        el('circle', { cx: c + 3.25, cy: c - 2.25, r: 1.75, fill: 'currentColor', stroke: 'none' }); break;
+      case 'music': ln(c + 5, c - 12, c + 5, c + 6); ln(c + 5, c - 12, c + 10, c - 8);
+        el('ellipse', { cx: c - 0.5, cy: c + 6, rx: 5.5, ry: 4, fill: 'none' });
+        ln(c - 1, c - 8, c - 1, c + 4); ln(c - 1, c - 8, c + 5, c - 12); break;
+      case 'cherry': el('circle', { cx: c - 5.5, cy: c + 6.5, r: 4.5, fill: 'none' });
+        el('circle', { cx: c + 6.5, cy: c + 7.5, r: 4.5, fill: 'none' });
+        ln(c - 5, c + 3, c + 4, c - 11); ln(c + 7, c + 4, c + 4, c - 11); ln(c + 4, c - 11, c + 10, c - 9); break;
+      case 'mushroom': el('path', { d: `M${c-11} ${c-3} A11 8 0 0 1 ${c+11} ${c-3} Z`, fill: 'none' });
+        el('path', { d: `M${c-5} ${c-3} L${c-4} ${c+10} L${c+4} ${c+10} L${c+5} ${c-3}`, fill: 'none' });
+        el('circle', { cx: c - 3.5, cy: c - 7.5, r: 1.5, fill: 'currentColor', stroke: 'none' });
+        el('circle', { cx: c + 3.5, cy: c - 6.5, r: 1.5, fill: 'currentColor', stroke: 'none' }); break;
+      case 'snowflake': ln(c, c-12, c, c+12); ln(c-10, c-6, c+10, c+6); ln(c-10, c+6, c+10, c-6);
+        ln(c-2.5, c-10, c, c-12); ln(c, c-12, c+2.5, c-10); ln(c-2.5, c+10, c, c+12); ln(c, c+12, c+2.5, c+10); break;
+      default: dot(3); break;
+    }
+    return svg;
+  }
+
+  function applyCross(style, target) {
+    const ids = target === 'all' ? (S.apps || []).map(a => a.id) : [target];
+    let p = Promise.resolve();
+    for (const appId of ids)
+      p = p.then(() => {
+        // The colour is only sent once it was picked here; otherwise each app keeps its own.
+        const args = { app: appId, crosshair: style };
+        if (S.crossColor !== undefined) args.crosshairColor = S.crossColor;
+        return call('setApp', args).then(r => { S.apps = r; });
+      });
+    p.then(() => { buildAll(); setStatus(_('Pointer saved')); })
+     .catch(e => setStatus(_f('Couldn\'t save. {0}', e.message), true));
+  }
+
+  function uploadCursor(pack) {
+    call('addCursor', { pack }).then(r => {
+      if (r && r.cancelled) return;
+      S.cursorPacks = r || S.cursorPacks;
+      buildAll(); setStatus(_('Pointer saved'));
+    }).catch(e => setStatus(_f('Couldn\'t save. {0}', e.message), true));
+  }
+
+  function newPack() {
+    const names = (S.cursorPacks || []).map(p => p.name);
+    let pack = 'custom', n = 2;
+    while (names.indexOf(pack) >= 0) { pack = 'custom-' + n; n++; }
+    uploadCursor(pack);
+  }
+
+  function buildCross() {
+    const apps = S.apps || [];
+    const target = S.crossApp && apps.some(a => a.id === S.crossApp) ? S.crossApp : 'all';
+    const packs = S.cursorPacks || [];
+    const isOn = id => target === 'all'
+      ? apps.length > 0 && apps.every(a => (a.crosshair || 'off') === id)
+      : ((apps.find(a => a.id === target) || {}).crosshair || 'off') === id;
+    const colorSel = h('select', { class: 'select', 'aria-label': _('Pointer colour') });
+    for (const [v, text] of [['', _('Theme accent')], ['#2ee678', _('Lime')], ['#35c7ff', _('Cyan')],
+      ['#ff4fa3', _('Pink')], ['#ffb52e', _('Amber')], ['#ffffff', _('White')]])
+      colorSel.append(h('option', { value: v, text }));
+    const shownApp = apps.find(a => a.id === target) || apps[0] || {};
+    colorSel.value = S.crossColor !== undefined ? S.crossColor : (shownApp.crosshairColor || '');
+    colorSel.addEventListener('change', () => {
+      S.crossColor = colorSel.value;
+      // Recolour whatever shape the selected apps already use.
+      const ids = (target === 'all' ? apps : apps.filter(a => a.id === target)).filter(a => (a.crosshair || 'off') !== 'off');
+      let p = Promise.resolve();
+      for (const a of ids)
+        p = p.then(() => call('setApp', { app: a.id, crosshairColor: S.crossColor }).then(r => { S.apps = r; }));
+      p.then(() => ids.length && setStatus(_('Pointer saved')))
+       .catch(e => setStatus(_f('Couldn\'t save. {0}', e.message), true));
+    });
+    const appSeg = segmented([['all', _('All apps')]].concat(apps.map(a => [a.id, a.name])), target,
+      v => { S.crossApp = v; buildAll(); });
+    const main = h('main', { class: 'apps cross-view' }, h('h1', { text: _('Mouse pointers') }),
+      h('p', { class: 'lead', text: _('Pick a pointer for the cursor inside the app window.') }),
+      h('div', { class: 'cross-bar' }, appSeg, colorSel,
+        button(_('Windows default'), 'quiet', () => {
+          call('resetCursorPack')
+            .then(() => setStatus(_('Windows pointers restored')))
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE777)));
+
+    const packImg = (pack, f, cls) => h('img', { class: cls || 'cross-img',
+      src: `img/cursor?pack=${encodeURIComponent(pack)}&file=${encodeURIComponent(f)}`, alt: f, draggable: false });
+
+    if (S.crossPack) {
+      const pack = packs.find(p => p.name === S.crossPack) || { name: S.crossPack, files: [] };
+      const grid = h('div', { class: 'cross-grid' });
+      for (const f of pack.files) {
+        const id = `img:${pack.name}/${f}`;
+        const card = h('div', { class: 'cross-cell' },
+          h('button', { type: 'button', class: `cross-card${isOn(id) ? ' sel' : ''}`,
+            'aria-pressed': String(isOn(id)), onclick: () => applyCross(id, target) },
+            packImg(pack.name, f), h('span', { class: 'cross-name', text: f })),
+          h('button', { type: 'button', class: 'cross-del', text: '×',
+            'aria-label': _f('Remove {0}', f),
+            onclick: () => call('removeCursor', { pack: pack.name, file: f })
+              .then(r => { S.cursorPacks = r || S.cursorPacks; buildAll(); })
+              .catch(e => setStatus(e.message || String(e), true)) }));
+        grid.append(card);
+      }
+      grid.append(h('button', { type: 'button', class: 'cross-card', onclick: () => uploadCursor(pack.name) },
+        h('span', { class: 'cross-none', text: '+' }), h('span', { class: 'cross-name', text: _('Add pointer…') })));
+      main.append(h('div', { class: 'cross-bar' },
+        button('‹ ' + _('Back'), 'quiet', () => { S.crossPack = null; buildAll(); }, 0xE72B),
+        h('h2', { class: 'cross-pack-name', text: pack.name }),
+        button(_('Use on Windows'), 'accent', () => {
+          call('applyCursorPack', { pack: pack.name })
+            .then(() => setStatus(_('Windows pointers updated')))
+            .catch(e => setStatus(e.message || String(e), true));
+        }, 0xE8A7)), grid);
+      return main;
+    }
+
+    const tabSeg = segmented([['packs', _('Packs')], ['shapes', _('Shapes')]],
+      S.crossTab || 'packs', v => { S.crossTab = v; buildAll(); });
+    main.append(h('div', { class: 'cross-tabs' }, tabSeg));
+    if ((S.crossTab || 'packs') === 'shapes') {
+      const grid = h('div', { class: 'cross-grid' });
+      for (const id of ['off'].concat(S.crosshairs || []))
+        grid.append(h('button', { type: 'button', class: `cross-card${isOn(id) ? ' sel' : ''}`,
+          'aria-pressed': String(isOn(id)), onclick: () => applyCross(id, target) },
+          id === 'off' ? h('span', { class: 'cross-none', text: '∅' }) : crossSvg(id),
+          h('span', { class: 'cross-name', text: crossLabel(id) })));
+      main.append(grid);
+      return main;
+    }
+    const pgrid = h('div', { class: 'cross-grid' });
+    for (const pack of packs) {
+      const thumb = pack.files.indexOf('pointer') >= 0 ? 'pointer' : pack.files[0];
+      const anyOn = pack.files.some(f => isOn(`img:${pack.name}/${f}`));
+      pgrid.append(h('button', { type: 'button', class: `cross-card${anyOn ? ' sel' : ''}`,
+        onclick: () => { S.crossPack = pack.name; buildAll(); } },
+        packImg(pack.name, thumb), h('span', { class: 'cross-name', text: pack.name })));
+    }
+    pgrid.append(h('button', { type: 'button', class: 'cross-card', onclick: newPack },
+      h('span', { class: 'cross-none', text: '+' }), h('span', { class: 'cross-name', text: _('New pack…') })));
+    main.append(pgrid);
+    return main;
   }
 
   // ---------- settings view ----------
@@ -1643,6 +1924,8 @@
     ui.list = h('div', { class: 'rail-list', role: 'listbox', 'aria-label': _('Themes') });
     const appsBtn = button(_('Apps and startup'), 'quiet', () => { flushSave(); S.view = 'apps'; buildAll(); }, 0xE713);
     appsBtn.setAttribute('aria-current', String(S.view === 'apps'));
+    const crossBtn = button(_('Mouse pointers'), 'quiet', () => { flushSave(); S.view = 'cross'; buildAll(); }, 0xE753);
+    crossBtn.setAttribute('aria-current', String(S.view === 'cross'));
     const settingsBtn = button(_('Settings'), 'quiet', () => { flushSave(); S.view = 'settings'; buildAll(); }, 0xE713);
     settingsBtn.setAttribute('aria-current', String(S.view === 'settings'));
     app.append(h('nav', { class: 'rail' },
@@ -1651,7 +1934,7 @@
           newMenu(),
           button(_('Import…'), 'quiet', importTheme, 0xE8C4))),
       railTools(),
-      ui.list, h('div', { class: 'rail-foot' }, appsBtn, settingsBtn,
+      ui.list, h('div', { class: 'rail-foot' }, appsBtn, crossBtn, settingsBtn,
         h('div', { class: 'foot-row' },
           button(_('Backup…'), 'quiet', backupLibrary, 0xE74E),
           button(_('Restore…'), 'quiet', restoreLibrary, 0xE895),
@@ -1660,6 +1943,7 @@
     renderRail();
     if (empty && S.view === 'edit') { app.append(buildEmpty()); markReady(); return; }
     if (S.view === 'apps') { app.append(buildApps()); markReady(); return; }
+    if (S.view === 'cross') { app.append(buildCross()); markReady(); return; }
     if (S.view === 'settings') { app.append(buildSettings()); markReady(); return; }
     app.append(buildCanvas(t), buildInspector(t));
     applyStageMode();

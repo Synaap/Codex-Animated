@@ -24,6 +24,10 @@ Themes, looks and the animation are edited in **Theme Studio**, and one theme li
   Studio; a still first frame is kept for the splash and previews.
 - **Looks that keep text readable** — visibility, blur, dim, tint, a clear zone on one side, glow,
   vignette, a light-app mode, a subtle focus drift and fit modes down to crisp pixel art.
+- **Mouse pointers** — a gallery of pointer packs on their own tab: pick a pack (or upload your own
+  images), see every role it covers, and apply it as your real Windows cursor scheme with one
+  click — backup and **Windows default** restore included. A drawn reticle can also follow the
+  cursor inside each app's window, per app, in the theme accent or a fixed colour.
 - **Theme Studio** — live preview, undo, drag-and-drop import, shareable `.altheme` files, six starter
   themes painted in code, and a French or English interface.
 - **Variety** — rotate themes, follow Windows light and dark mode, give an app a night theme.
@@ -95,8 +99,11 @@ its own while an app window is in real full screen or Windows is in presentation
 Right-click the **Animated Launchers** icon in the notification area (it may be under the hidden
 icons) for a menu per app: **Theme**, **Next theme**, **Hide/Show artwork**, **More/Less visible**,
 the startup animation on or off, **Pause animation**, and **Stop watching**. **Win+Alt+H** hides or
-shows the artwork in every app at once and **Win+Alt+T** jumps to the next theme. A theme can also
-carry a `sound.wav` chime that plays with the startup animation. **Theme Studio…** opens the editor;
+shows the artwork in every app at once, **Win+Alt+T** jumps to the next theme, **Win+Alt+P**
+pauses or resumes every animated wallpaper, and **Win+Alt+Up** / **Win+Alt+Down** nudge every
+artwork's visibility. An app can also pause its moving wallpaper while none of its windows is in
+front. Slideshows crossfade between slides, and a theme can carry a `sound.wav` chime that plays
+with the startup animation. **Theme Studio…** opens the editor;
 **Exit** closes the helper and leaves the apps as they are.
 
 ### Theme Studio
@@ -109,6 +116,9 @@ carry a `sound.wav` chime that plays with the startup animation. **Theme Studio�
   view; hold **C** to compare with the untouched picture) or plays the real animation page.
 - **Animated themes** — drop or pick a `.gif` anywhere an image is accepted and the theme moves.
   Animated themes carry a small GIF badge in the list, and `.altheme` exports keep the animation.
+- **Slideshows and chimes** — the inspector's Slideshow section adds, reorders and removes slides
+  with live thumbnails, and the Startup animation section picks a `.wav` or one of three built-in
+  chimes with a play button.
 - **The inspector** on the right holds the look (presets plus fine tuning), the animation text,
   font, avatar and style, and the credit line. Edits save by themselves and reach running apps at
   once; **Ctrl+Z** undoes them. **Use on** puts the theme on one app — chips grouped under **AI**
@@ -119,6 +129,9 @@ carry a `sound.wav` chime that plays with the startup animation. **Theme Studio�
 - **Apps and startup** sets, per app: its theme, the animation (on/off, speed, style, first start
   only), theme rotation, a light-mode and a night theme with their hours, extra dimming, hiding in
   full screen, and a live status line (attached, watching, off or parked).
+- **Mouse pointers**: browse pointer packs, preview every role they cover, apply one as your
+  Windows cursor scheme or restore the default, upload your own images into a new pack, and give
+  each app a drawn reticle that follows the cursor inside its window.
 - **Settings**: the language (Same as Windows, English, Français), a master **Startup animation**
   switch for every app at once, **Check for updates** with one-click install, **Copy report** for
   bug reports, the logs folder and **Restart helpers**.
@@ -156,6 +169,7 @@ Sakura rain, Deep sea and Sunset — all painted in code, so there is nothing to
 | `<App> Animated\` | One app's `settings.ini`, its own copy of the wallpaper and avatar, and `status.ini` |
 | `Animated Launchers\studio.ini` | Theme Studio's window position, sorting, favorites and language |
 | `Animated Launchers\custom-apps.ini` | The apps you added yourself |
+| `Animated Launchers\Cursors\` | Pointer packs and the saved Windows cursor scheme (`backup.ini`) |
 | `Animated Launchers\Looks\` | Your saved look presets |
 | `Animated Launchers\Logs\` | The helper log |
 

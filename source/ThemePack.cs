@@ -18,6 +18,7 @@ internal static class ThemePack
     private const long MaxPackBytes = 128L * 1024 * 1024;
     private const long MaxBackupBytes = 4L * 1024 * 1024 * 1024;
     private const long MaxTextBytes = 1024 * 1024;
+    private const int MaxSlideEntries = 600;
 
     // ---- export -------------------------------------------------------------
 
@@ -193,7 +194,7 @@ internal static class ThemePack
     }
 
     // A WAV starts with a RIFF/WAVE header; anything else is not a chime.
-    private static bool IsWave(byte[] bytes)
+    internal static bool IsWave(byte[] bytes)
     {
         return bytes != null && bytes.Length > 12 &&
             bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F' &&
@@ -258,6 +259,7 @@ internal static class ThemePack
     private static Dictionary<string, byte[]> ReadKnown(ZipArchive zip, string prefix)
     {
         var entries = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        int slideEntries = 0;
         foreach (ZipArchiveEntry entry in zip.Entries)
         {
             if (!entry.FullName.StartsWith(prefix, StringComparison.Ordinal)) continue;
@@ -268,10 +270,21 @@ internal static class ThemePack
             long limit = shortName.EndsWith(".ini", StringComparison.OrdinalIgnoreCase) ? MaxTextBytes : MaxPackBytes;
             if (entry.Length > limit)
                 throw new InvalidDataException("\"" + shortName + "\" inside the file is too big.");
+            if (shortName.StartsWith("slides/", StringComparison.OrdinalIgnoreCase) && ++slideEntries > MaxSlideEntries)
+                continue;
             using (var stream = entry.Open())
             using (var memory = new MemoryStream())
             {
-                stream.CopyTo(memory);
+                // The declared size can lie: count what actually inflates.
+                var buffer = new byte[81920];
+                long total = 0;
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    total += read;
+                    if (total > limit) throw new InvalidDataException("\"" + shortName + "\" inside the file is too big.");
+                    memory.Write(buffer, 0, read);
+                }
                 entries[shortName] = memory.ToArray();
             }
         }
@@ -310,7 +323,7 @@ internal static class ThemePack
         return name;
     }
 
-    private static string CleanName(string raw)
+    internal static string CleanName(string raw)
     {
         var chars = new StringBuilder();
         foreach (char c in raw ?? "")

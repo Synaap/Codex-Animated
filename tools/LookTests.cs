@@ -494,6 +494,33 @@ internal static class LookTests
         seed.Set("themeLight", "Sunny"); seed.Set("applied", "Sunny");
         seed.Save(Path.Combine(prof, "settings.ini"));
         AppProfile back = AppProfile.Load(prof);
+        Check("crosshair: style ids and img: packs normalize, junk falls to off",
+            AppProfile.NormalizeCrosshair(" star ") == "star" &&
+            AppProfile.NormalizeCrosshair("img:kitty/pointer") == "img:kitty/pointer" &&
+            AppProfile.NormalizeCrosshair("img:kitty/sub/x") == "off" &&
+            AppProfile.NormalizeCrosshair("IMG:Kitty/pointer") == "img:kitty/pointer" &&
+            AppProfile.NormalizeCrosshair("img:../etc") == "off" &&
+            AppProfile.NormalizeCrosshair("nope") == "off", null);
+        // A profile loaded without the custom-app flag must not switch a custom app's splash on.
+        string custDir = Temp("custom-splash");
+        var custIni = new IniFile(); custIni.Set("theme", "X");
+        custIni.Save(Path.Combine(custDir, "settings.ini"));
+        AppProfile custLoad = AppProfile.Load(custDir);
+        custLoad.Theme = "Y";
+        custLoad.Save();
+        Check("profile: save without a splash key keeps a custom app's default off",
+            !AppProfile.Load(custDir, true).SplashOnStart && IniFile.Load(Path.Combine(custDir, "settings.ini")).Get("splash") == null, null);
+        custLoad.SplashOnStart = false;
+        custLoad.Save();
+        Check("profile: a changed splash is written", IniFile.Load(Path.Combine(custDir, "settings.ini")).Get("splash") == "off", null);
+        // Hostile APNG chunk lengths (int overflow) are rejected, not thrown.
+        byte[] evil = new byte[40];
+        Array.Copy(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 0x7F, 0xFF, 0xFF, 0xFF, (byte)'a', (byte)'c', (byte)'T', (byte)'L' }, evil, 16);
+        bool evilOk;
+        try { evilOk = !ImageCodec.IsApng(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 0x7F, 0xFF, 0xFF, 0xFF, (byte)'x', (byte)'x', (byte)'x', (byte)'x', 0, 0, 0, 0 }); }
+        catch (Exception) { evilOk = false; }
+        Check("apng: an overflowing chunk length is not an APNG", evilOk, null);
+        Check("cursor: reserved device names are renamed", ThemeLibrary.CursorClean("CON") == "con-x" && ThemeLibrary.CursorClean("") == "pointer", ThemeLibrary.CursorClean("CON"));
         Check("profile: variety keys round-trip", back.Rotate == "start" && back.RotateFavs &&
             back.FollowWindows && back.ThemeLight == "Sunny" && back.Applied == "Sunny",
             back.Rotate + " " + back.Applied);
@@ -586,6 +613,29 @@ internal static class LookTests
                 IniFile.Load(Path.Combine(appDir, "settings.ini")).Get("opacity"));
             ThemeLibrary.NudgeOpacity(appDir, -5);
             Check("nudge: clamped at the floor", IniFile.Load(Path.Combine(appDir, "settings.ini")).Get("opacity") == "4", null);
+
+            // Cursor packs resolve only real PNGs inside the pack folders.
+            string packDir = Path.Combine(data, "Animated Launchers", "Cursors", "kitty");
+            Directory.CreateDirectory(packDir);
+            File.WriteAllBytes(Path.Combine(packDir, "pointer.png"), new byte[] { 1, 2, 3 });
+            File.WriteAllBytes(Path.Combine(packDir, "skip.txt"), new byte[] { 1 });
+            string resolved = ThemeLibrary.CursorImage("img:kitty/pointer") ?? "";
+            Check("crosshair: CursorImage resolves real pack files only",
+                resolved.EndsWith("pointer.png") && ThemeLibrary.CursorImage("img:kitty/skip") == null &&
+                ThemeLibrary.CursorImage("img:kitty/missing") == null && ThemeLibrary.CursorImage("star") == null &&
+                ThemeLibrary.CursorPacks()["kitty"][0] == "pointer", resolved);
+
+            // A generated .cur holds a type-2 dir, the hotspot, then the PNG blob.
+            byte[] fakePng;
+            using (var bmp = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            using (var ms = new MemoryStream()) { bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png); fakePng = ms.ToArray(); }
+            byte[] cur = CursorScheme.PngToCurBytes(fakePng, 6, 7, 32, 32);
+            bool curOk = cur.Length == 22 + fakePng.Length &&
+                cur[2] == 2 && cur[3] == 0 &&                       // type 2
+                cur[10] == 6 && cur[11] == 0 && cur[12] == 7 && cur[13] == 0 &&  // hotspot 6,7
+                cur[8] == 0 && cur[9] == 0 &&                        // palette/reserved
+                cur[22] == 0x89 && cur[23] == 0x50;                  // PNG signature \x89P
+            Check("cursor: .cur packing keeps dir, hotspot and PNG payload", curOk, null);
         }
         finally { Environment.SetEnvironmentVariable("ANIMATED_DATA", keepData); }
     }

@@ -149,6 +149,15 @@ internal sealed partial class StudioForm
                 if (m.ContainsKey("gifPause")) profile.GifPause = Flag(m, "gifPause");
                 if (m.ContainsKey("battSaver")) profile.BattSaver = Flag(m, "battSaver");
                 if (m.ContainsKey("slideSec")) profile.SlideSec = Math.Max(5, Math.Min(3600, Int(m, "slideSec", 30)));
+                if (m.ContainsKey("pauseBg")) profile.PauseBg = Flag(m, "pauseBg");
+                if (m.ContainsKey("crosshair")) profile.Crosshair = AppProfile.NormalizeCrosshair(Str(m, "crosshair"));
+                if (m.ContainsKey("crosshairColor"))
+                {
+                    string cc = (Str(m, "crosshairColor") ?? "").Trim();
+                    if (cc.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(cc, "^#[0-9a-fA-F]{6}$"))
+                        throw new ArgumentException("Crosshair colour needs a #RRGGBB hex.");
+                    profile.CrosshairColor = cc;
+                }
                 profile.Save();
                 return AppList();
             }
@@ -665,6 +674,179 @@ internal sealed partial class StudioForm
                 using (Process.Start(new ProcessStartInfo("powershell.exe",
                     "-NoProfile -ExecutionPolicy Bypass -File \"" + installer + "\" -NoBuild") { UseShellExecute = false })) { }
                 return new Dictionary<string, object> { { "started", installer } };
+            }
+            case "addSlides":
+            {
+                string name = ExistingTheme(m);
+                string root = ThemeLibrary.Folder(name);
+                var paths = new List<string>();
+                object test;
+                if (evalMode && m.TryGetValue("paths", out test) && test != null && test.ToString().Length > 0)
+                    paths.AddRange(test.ToString().Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries));
+                else
+                {
+                    string[] picked = PickImages("Choose slideshow images");
+                    if (picked == null) return new Dictionary<string, object> { { "cancelled", true } };
+                    paths.AddRange(picked);
+                }
+                Directory.CreateDirectory(Path.Combine(root, "slides"));
+                int next = 1;
+                foreach (string existing in ThemeLibrary.SlideFiles(root))
+                {
+                    int n;
+                    if (existing.Length > 5 && existing[4] == '-' && int.TryParse(existing.Substring(0, 4), out n))
+                        next = Math.Max(next, n + 1);
+                }
+                int added = 0;
+                foreach (string p in paths)
+                {
+                    byte[] jpeg;
+                    try { jpeg = ImageCodec.ToJpeg(ImageCodec.ReadBytes(p)); }
+                    catch { continue; }
+                    if (jpeg == null) continue;
+                    string leaf = ThemePack.CleanName(Path.GetFileNameWithoutExtension(p));
+                    ImageCodec.SaveAtomic(
+                        Path.Combine(root, "slides", next.ToString("0000") + "-" + leaf + ".jpg"), jpeg);
+                    next++; added++;
+                }
+                if (added == 0) throw new ArgumentException("None of those files could be read as a picture.");
+                ReapplyTo(name);
+                return State();
+            }
+            case "addCursor":
+            {
+                // Upload pointer images into a pack; creates the pack when needed.
+                string pack = ThemeLibrary.CursorClean(Str(m, "pack"));
+                string dir = Path.Combine(ThemeLibrary.CursorsRoot, pack);
+                string testPick = TestPath(m);
+                string[] picked = testPick != null ? new[] { testPick } : PickImages("Choose pointer images");
+                if (picked == null) return new Dictionary<string, object> { { "cancelled", true } };
+                Directory.CreateDirectory(dir);
+                int added = 0;
+                foreach (string p in picked)
+                {
+                    Image src;
+                    try { src = Image.FromFile(p); }
+                    catch { continue; }
+                    using (src)
+                    {
+                        string stem = ThemeLibrary.CursorClean(Path.GetFileNameWithoutExtension(p));
+                        string dest = Path.Combine(dir, stem + ".png");
+                        int n = 2;
+                        while (File.Exists(dest)) { dest = Path.Combine(dir, stem + "-" + n + ".png"); n++; }
+                        // Pointers are tiny: fit anything bigger into 256 px.
+                        double fit = Math.Min(1.0, Math.Min(256.0 / src.Width, 256.0 / src.Height));
+                        if (fit < 1.0)
+                            using (var small = new Bitmap(src, Math.Max(1, (int)(src.Width * fit)), Math.Max(1, (int)(src.Height * fit))))
+                                small.Save(dest, System.Drawing.Imaging.ImageFormat.Png);
+                        else src.Save(dest, System.Drawing.Imaging.ImageFormat.Png);
+                        added++;
+                    }
+                }
+                if (added == 0) throw new ArgumentException("None of those files could be read as a picture.");
+                return CursorPacks();
+            }
+            case "removeCursor":
+            {
+                string pack = ThemeLibrary.CursorClean(Str(m, "pack"));
+                string file = ThemeLibrary.CursorClean(Str(m, "file"));
+                string path = ThemeLibrary.CursorImage("img:" + pack + "/" + file);
+                if (path == null) throw new FileNotFoundException("That pointer is already gone.");
+                File.Delete(path);
+                string packDir = Path.GetDirectoryName(path);
+                foreach (string ext in new[] { ".cur", ".ani" })
+                {
+                    string native = Path.Combine(packDir, file + ext);
+                    if (File.Exists(native)) File.Delete(native);
+                }
+                string generated = Path.Combine(packDir, "generated", file + ".cur");
+                if (File.Exists(generated)) File.Delete(generated);
+                return CursorPacks();
+            }
+            case "applyCursorPack":
+                CursorScheme.Apply(Str(m, "pack"));
+                return new Dictionary<string, object> { { "applied", true } };
+            case "resetCursorPack":
+                CursorScheme.Reset();
+                return new Dictionary<string, object> { { "applied", true } };
+            case "removeSlide":
+            {
+                string name = ExistingTheme(m);
+                string file = Str(m, "file");
+                if (string.IsNullOrEmpty(file) || file != Path.GetFileName(file)) throw new ArgumentException("Unknown slide.");
+                string root = ThemeLibrary.Folder(name);
+                ThemeLibrary.WithLock(root, delegate {
+                    File.Delete(Path.Combine(root, "slides", file));
+                    // An empty slides folder would still flag the theme as a slideshow.
+                    if (ThemeLibrary.SlideFiles(root).Count == 0)
+                        try { Directory.Delete(Path.Combine(root, "slides"), true); } catch (IOException) { }
+                });
+                ReapplyTo(name);
+                return State();
+            }
+            case "moveSlide":
+            {
+                string name = ExistingTheme(m);
+                string root = ThemeLibrary.Folder(name);
+                string file = Str(m, "file");
+                int step = Str(m, "dir") == "up" ? -1 : 1;
+                if (string.IsNullOrEmpty(file) || file != Path.GetFileName(file)) throw new ArgumentException("Unknown slide.");
+                List<string> files = ThemeLibrary.SlideFiles(root);
+                int i = files.FindIndex(delegate (string f) { return string.Equals(f, file, StringComparison.OrdinalIgnoreCase); });
+                int j = i + step;
+                if (i < 0 || j < 0 || j >= files.Count) return State();
+                string moved = files[i]; files[i] = files[j]; files[j] = moved;
+                ThemeLibrary.WithLock(root, delegate {
+                    string dir = Path.Combine(root, "slides");
+                    var finalNames = new List<string>();
+                    for (int k = 0; k < files.Count; k++)
+                    {
+                        string suffix = files[k].Length > 5 && files[k][4] == '-' ? files[k].Substring(5) : files[k];
+                        string finalName = (k + 1).ToString("0000") + "-" + suffix;
+                        finalNames.Add(finalName);
+                        if (!string.Equals(files[k], finalName, StringComparison.Ordinal))
+                            File.Move(Path.Combine(dir, files[k]), Path.Combine(dir, files[k] + ".moved"));
+                    }
+                    for (int k = 0; k < files.Count; k++)
+                    {
+                        string staged = Path.Combine(dir, files[k] + ".moved");
+                        if (File.Exists(staged)) File.Move(staged, Path.Combine(dir, finalNames[k]));
+                    }
+                });
+                ReapplyTo(name);
+                return State();
+            }
+            case "setChime":
+            {
+                string name = ExistingTheme(m);
+                string path = TestPath(m) ?? PickFile("Choose a startup sound", "Sound (*.wav)|*.wav");
+                if (path == null) return new Dictionary<string, object> { { "cancelled", true } };
+                ThemeLibrary.SetChime(name, ImageCodec.ReadBytes(path));
+                ReapplyTo(name);
+                return State();
+            }
+            case "useChime":
+            {
+                string name = ExistingTheme(m);
+                string kind = Str(m, "kind");
+                if (kind != "bell" && kind != "blip" && kind != "whoosh") kind = "bell";
+                ThemeLibrary.SetChime(name, ThemeLibrary.ChimeWav(kind));
+                ReapplyTo(name);
+                return State();
+            }
+            case "clearChime":
+            {
+                string name = ExistingTheme(m);
+                ThemeLibrary.ClearChime(name);
+                ReapplyTo(name);
+                return State();
+            }
+            case "playChime":
+            {
+                string path = Path.Combine(ThemeLibrary.Folder(ExistingTheme(m)), "sound.wav");
+                if (!File.Exists(path)) throw new FileNotFoundException("This theme has no chime yet.");
+                new System.Media.SoundPlayer(path).Play();
+                return new Dictionary<string, object> { { "ok", true } };
             }
         }
         throw new ArgumentException("Unknown command.");

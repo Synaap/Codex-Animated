@@ -23,8 +23,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyTitle("Theme Studio")]
 [assembly: AssemblyProduct("Theme Studio")]
 [assembly: AssemblyDescription("Theme library and look editor for the Animated launchers")]
-[assembly: AssemblyVersion("3.2.0.0")]
-[assembly: AssemblyFileVersion("3.2.0.0")]
+[assembly: AssemblyVersion("3.3.0.0")]
+[assembly: AssemblyFileVersion("3.3.0.0")]
 
 internal static class ThemeStudioProgram
 {
@@ -144,7 +144,9 @@ internal sealed partial class StudioForm : Form
         "useDesktopWallpaper", "pasteImage", "importFolder",
         "cropAvatar", "createGradient", "editGradient", "setPrefs", "seedStarters", "starterPreview",
         "checkReadability", "copyReport", "openLogFolder", "restartHelpers",
-        "checkUpdates", "getUpdate" };
+        "checkUpdates", "getUpdate",
+        "addSlides", "removeSlide", "moveSlide", "setChime", "clearChime", "playChime", "useChime",
+        "addCursor", "removeCursor", "applyCursorPack", "resetCursorPack" };
 
     private readonly WebView2 browser;
     private readonly string[] args;
@@ -396,6 +398,15 @@ internal sealed partial class StudioForm : Form
         }
         if (s.Length == 2 && s[0] == "img")
         {
+            if (s[1] == "cursor")
+            {
+                string pack, file;
+                if (!q.TryGetValue("pack", out pack) || !q.TryGetValue("file", out file)) return null;
+                string cpath = ThemeLibrary.CursorImage("img:" + pack + "/" + file);
+                if (cpath == null) return null;
+                type = "image/png";
+                return ImageCodec.ReadBytes(cpath);
+            }
             string theme;
             if (!q.TryGetValue("theme", out theme)) return null;
             theme = ThemeLibrary.Exact(theme);
@@ -416,6 +427,15 @@ internal sealed partial class StudioForm : Form
             {
                 string avatar = Path.Combine(ThemeLibrary.Folder(theme), "avatar.jpg");
                 return File.Exists(avatar) ? ImageCodec.ReadBytes(avatar) : null;
+            }
+            if (s[1] == "slide")
+            {
+                List<string> files = ThemeLibrary.SlideFiles(ThemeLibrary.Folder(theme));
+                if (files.Count == 0) return null;
+                int n = Number(q, "n", 0, 0, files.Count - 1);
+                string path = Path.Combine(ThemeLibrary.Folder(theme), "slides", files[n]);
+                type = string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase) ? "image/png" : "image/jpeg";
+                return File.Exists(path) ? ImageCodec.ReadBytes(path) : null;
             }
             if (s[1] == "look") return LookImage(theme, q);
             return null;
@@ -702,6 +722,15 @@ internal sealed partial class StudioForm : Form
             return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
 
+    private string[] PickImages(string title)
+    {
+        using (var dialog = new OpenFileDialog {
+            Title = title, RestoreDirectory = true, Multiselect = true,
+            Filter = "Images (*.jpg, *.jpeg, *.png, *.bmp)|*.jpg;*.jpeg;*.png;*.bmp"
+        })
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileNames : null;
+    }
+
     private string PickFolder()
     {
         using (var dialog = new FolderBrowserDialog { Description = "Choose a folder of images", ShowNewFolderButton = false })
@@ -890,7 +919,8 @@ internal sealed partial class StudioForm : Form
                     { "modeLight", light }, { "modeNight", night },
                     { "speed", profile.Speed }, { "style", profile.Style }, { "once", profile.SplashOnce }, { "watch", profile.Watch },
                     { "gifSpeed", profile.GifSpeed }, { "gifCap", profile.GifCap }, { "gifPause", profile.GifPause },
-                    { "battSaver", profile.BattSaver }, { "slideSec", profile.SlideSec },
+                    { "battSaver", profile.BattSaver }, { "slideSec", profile.SlideSec }, { "pauseBg", profile.PauseBg },
+                    { "crosshair", profile.Crosshair }, { "crosshairColor", profile.CrosshairColor },
                     { "installed", app.Installed }, { "preview", app.Preview }, { "group", app.Group },
                     { "helperExists", helperExists },
                     { "helperRunning", HelperRunning(app) },
@@ -996,11 +1026,14 @@ internal sealed partial class StudioForm : Form
                 brokenCache[stamp] = broken;
             }
             brokenCache.TryGetValue(stamp, out broken);
+            List<string> slideFiles = ThemeLibrary.SlideFiles(folder);
             themes.Add(new Dictionary<string, object> {
                 { "name", name }, { "look", LookData(Look.Read(ini)) }, { "text", TextData(SplashText.Read(ini)) },
                 { "hasAvatar", File.Exists(Path.Combine(folder, "avatar.jpg")) },
                 { "gif", File.Exists(Path.Combine(folder, "wallpaper.gif")) }, { "apng", File.Exists(Path.Combine(folder, "wallpaper.apng")) },
-                { "slides", Directory.Exists(Path.Combine(folder, "slides")) }, { "stamp", ThemeLibrary.Stamp(name) },
+                { "slides", Directory.Exists(Path.Combine(folder, "slides")) }, { "slideCount", slideFiles.Count },
+                { "slideFiles", slideFiles.ToArray() },
+                { "sound", File.Exists(Path.Combine(folder, "sound.wav")) }, { "stamp", ThemeLibrary.Stamp(name) },
                 { "gradient", ini.Get("gradient") ?? "" }, { "created", Directory.GetCreationTimeUtc(folder).ToString("o") },
                 { "accents", accents }, { "broken", broken }
             });
@@ -1008,9 +1041,18 @@ internal sealed partial class StudioForm : Form
         Rectangle area = Screen.FromControl(this).WorkingArea;
         return new Dictionary<string, object> {
             { "themes", themes }, { "apps", AppList() }, { "looks", LookPresets.Names() },
+            { "crosshairs", AppProfile.CrosshairStyles }, { "cursorPacks", CursorPacks() },
             { "prefs", Prefs() }, { "version", Application.ProductVersion },
             { "screen", new Dictionary<string, object> { { "w", area.Width }, { "h", area.Height } } }
         };
+    }
+
+    private static List<object> CursorPacks()
+    {
+        var list = new List<object>();
+        foreach (var kv in ThemeLibrary.CursorPacks())
+            list.Add(new Dictionary<string, object> { { "name", kv.Key }, { "files", kv.Value.ToArray() } });
+        return list;
     }
 
     // Studio-window prefs in studio.ini: favorites is a |-list of theme names,

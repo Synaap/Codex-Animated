@@ -222,7 +222,7 @@ internal static class ImageCodec
             int length = Int32Be(bytes, pos);
             string type = System.Text.Encoding.ASCII.GetString(bytes, pos + 4, 4);
             if (type == "acTL") return true;
-            if (type == "IDAT" || type == "IEND" || length < 0 || pos + 12 + length > bytes.Length) return false;
+            if (type == "IDAT" || type == "IEND" || length < 0 || (long)pos + 12 + length > bytes.Length) return false;
             pos += 12 + length;
         }
         return false;
@@ -257,7 +257,7 @@ internal static class ImageCodec
             {
                 int length = Int32Be(bytes, pos);
                 string type = System.Text.Encoding.ASCII.GetString(bytes, pos + 4, 4);
-                if (length < 0 || pos + 12 + length > bytes.Length) break;
+                if (length < 0 || (long)pos + 12 + length > bytes.Length) break;
                 byte[] data = new byte[length];
                 Buffer.BlockCopy(bytes, pos + 8, data, 0, length);
                 if (type == "IHDR")
@@ -304,7 +304,7 @@ internal static class ImageCodec
                         int x = Int32Be(ctl, 12), y = Int32Be(ctl, 16);
                         int num = UInt16Be(ctl, 20), den = UInt16Be(ctl, 22);
                         int dispose = ctl[24], blend = ctl[25];
-                        if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > canvasW || y + h > canvasH)
+                        if (w <= 0 || h <= 0 || x < 0 || y < 0 || (long)x + w > canvasW || (long)y + h > canvasH)
                             { reason = "a frame does not fit the canvas"; art.Dispose(); return null; }
                         Bitmap snapshot = dispose == 2 ? (Bitmap)canvas.Clone() : null;
                         using (Bitmap patch = Decode(new MemoryStream(ApngPng(ihdr, plte, trns, ctl), false), false))

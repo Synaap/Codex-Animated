@@ -4,7 +4,67 @@ All notable changes to Animated Launchers (released as Codex Animated). Versions
 [semantic versioning](https://semver.org/). Download releases from the
 [releases page](https://github.com/Synaap/Codex-Animated/releases).
 
-## Unreleased
+## 3.3.0 — 2026-11-23
+
+### Added
+
+- **Slideshow editor in Theme Studio**: a Slideshow section on the theme
+  inspector lists a theme's slides as thumbnails with reorder and remove tools,
+  and *Add slides…* picks multiple pictures at once (`addSlides`,
+  `removeSlide`, `moveSlide`; slides are normalised to numbered JPEGs).
+- **Startup-chime editor**: the Startup animation section can pick a `.wav`,
+  choose one of three built-in generated chimes (Bell, Blip, Whoosh), play it
+  back and remove it (`setChime`, `useChime`, `clearChime`, `playChime`).
+- **Animated wallpapers through per-pixel looks**: clear zones, glow, vignette
+  and transparent-bar fits no longer force a still — the child renderer folds
+  the alpha mask into the persistent frame DIB in place, so GIF, APNG and
+  slideshow themes keep moving under every look. Slower than the opaque path
+  (one mask pass per frame), so frame pacing still applies.
+- The live preview cycles a slideshow theme's slides and shows them as they
+  will look in the app.
+- **Custom crosshairs**: an optional reticle that follows the cursor inside each
+  app's window — Dot, Cross, Circle or Scope, in the theme accent or a fixed
+  colour (`crosshair`, `crosshairColor` per app; a 48 px layered child window
+  moved by a 30 Hz cursor poll, painted once per style).
+  Twenty-four presets — dot, cross, plus, x, circle, ring, scope, chevron,
+  diamond, square, brackets, t-shape, triangle, split, star and centre-dot,
+  plus a cute set: cat, paw, heart, bow, ghost, bunny, crown and flower — browsable
+  in the **Mouse pointers** tab in Theme Studio: pick an app (or all apps)
+  and a colour, then click a reticle card to apply it. The cute set is
+  cat, paw, heart, bow, ghost, bunny, crown and flower, plus nine kitty-head
+  cursor-role pointers (arrow, plus, ring, I-beam, move, down, no-entry,
+  help, resize).
+- **Cursor packs** — real image pointers. `%LOCALAPPDATA%\Animated Launchers\Cursors\<pack>\<pointer>.png` folders hold PNG packs; the studio's Packs
+  section browses them, drills into each pack's pointers, applies one with a
+  click (`crosshair=img:<pack>/<file>`), and **Add pointer…**/**New pack…**
+  uploads your own images. Ships with a seeded `kitty` pack; the installer
+  seeds new packs from a `cursors\` folder next to the package.
+- **Slideshow crossfades**: slide changes blend over ~400 ms instead of cutting.
+- **Win+Alt+P** pauses or resumes every animated wallpaper at once, and
+  **Win+Alt+Up/Down** nudge every artwork's opacity (in addition to the
+  existing Win+Alt+H hide/show and Win+Alt+T next theme).
+- **Unfocused pause**: `pauseBg` stops the animation pump while none of the
+  app's windows is foreground (per-app toggle in Theme Studio).
+
+### Fixed (bug audit)
+
+- A profile saved without the custom-app flag (applying a theme, rotating, renaming) wrote `splash=on` and
+  silently turned the startup animation on for custom apps; `splash=` is now only written when it was present or changed.
+- Slide and chime edits in Theme Studio now re-apply to every app showing that theme (they never reached the apps before),
+  an emptied slides folder is removed, and a `slides` change reloads the wallpaper at once.
+- A look change during a slideshow crossfade could dispose the frame being blended and park the session; crossfades now
+  survive re-renders, handle slides of different sizes, and `source` never points at a freed frame.
+- Animated wallpapers under clear-zone/glow/vignette no longer trust GDI+'s unspecified alpha bytes in the frame DIB.
+- APNG chunk-length and frame-rectangle integer overflows are rejected instead of throwing.
+- Theme import reads zip entries through a bounded copy (a lying size field can no longer inflate past the cap) and
+  caps slide entries at 600; `addSlides` only honours an explicit `paths` list in test mode.
+- Pointer packs: applying a pack no longer leaves stale roles from the previous pack; the saved scheme is never one of
+  ours, keeps `%SystemRoot%` paths unexpanded, and oversized PNGs are fitted to 128 px; reserved device names are refused;
+  removing a pointer also removes its `.cur`/`.ani`/generated files; uninstall with data removal restores the saved scheme.
+- Crosshair overlay retries painting instead of staying blank when `UpdateLayeredWindow` fails, the cache is keyed by file
+  time and bounded, and picking a shape no longer resets each app's colour (the colour picker now applies on change).
+- Studio: slideshow preview filters apply, no button nested in a button, chat mock escapes the app name, two untranslated
+  strings and 20 dead French keys fixed.
 
 ## 3.2.0 — 2026-11-22
 

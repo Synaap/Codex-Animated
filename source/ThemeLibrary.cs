@@ -31,6 +31,67 @@ internal static class ThemeLibrary
         get { return Path.Combine(DataRoot, "Animated Launchers"); }
     }
 
+    // Cursor packs: Cursors\<pack>\<pointer>.png — image-based mouse pointers,
+    // seeded by the installer and grown by the studio's upload command.
+    internal static string CursorsRoot
+    {
+        get { return Path.Combine(SharedRoot, "Cursors"); }
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex CursorId =
+        new System.Text.RegularExpressions.Regex("^[a-z0-9_-]+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    internal static bool ValidCursorId(string id) { return id != null && CursorId.IsMatch(id); }
+
+    // "<clean id>": lowercases, strips everything outside [a-z0-9_-].
+    internal static string CursorClean(string raw)
+    {
+        var chars = new StringBuilder();
+        foreach (char ch in (raw ?? "").ToLowerInvariant())
+            chars.Append((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ? ch : '-');
+        string id = chars.ToString().Trim('-');
+        while (id.Contains("--")) id = id.Replace("--", "-");
+        if (id.Length == 0) return "pointer";
+        // Windows reserved device names (con.png would hit the console).
+        if (System.Text.RegularExpressions.Regex.IsMatch(id, "^(con|prn|aux|nul|com[1-9]|lpt[1-9])$")) id += "-x";
+        return id;
+    }
+
+    // pack -> sorted pointer ids (file stems) for every pack on disk.
+    internal static SortedDictionary<string, List<string>> CursorPacks()
+    {
+        var packs = new SortedDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (string dir in Directory.GetDirectories(CursorsRoot))
+            {
+                string pack = Path.GetFileName(dir);
+                if (!ValidCursorId(pack)) continue;
+                var files = new List<string>();
+                foreach (string png in Directory.GetFiles(dir, "*.png"))
+                {
+                    string stem = Path.GetFileNameWithoutExtension(png);
+                    if (ValidCursorId(stem)) files.Add(stem);
+                }
+                if (files.Count > 0) { files.Sort(StringComparer.Ordinal); packs[pack] = files; }
+            }
+        }
+        catch (DirectoryNotFoundException) { }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return packs;
+    }
+
+    // The PNG path behind an "img:<pack>/<file>" style, or null when invalid/absent.
+    internal static string CursorImage(string style)
+    {
+        if (string.IsNullOrEmpty(style) || !style.StartsWith("img:")) return null;
+        string[] parts = style.Substring(4).Split('/');
+        if (parts.Length != 2 || !ValidCursorId(parts[0]) || !ValidCursorId(parts[1])) return null;
+        string path = Path.Combine(CursorsRoot, parts[0], parts[1] + ".png");
+        return File.Exists(path) ? path : null;
+    }
+
     internal static string Root
     {
         get
@@ -611,6 +672,103 @@ internal static class ThemeLibrary
                 File.Delete(apng);
             }
         });
+    }
+
+    // The ordered slide filenames of a theme's slides\ folder (same extension
+    // filter and ordinal sort as ImageCodec.LoadSlides). Empty when none.
+    internal static List<string> SlideFiles(string folder)
+    {
+        var list = new List<string>();
+        string dir = Path.Combine(folder, "slides");
+        if (Directory.Exists(dir))
+            foreach (string path in Directory.GetFiles(dir))
+            {
+                string ext = Path.GetExtension(path);
+                if (string.Equals(ext, ".jpg", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ext, ".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ext, ".png", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ext, ".bmp", StringComparison.OrdinalIgnoreCase))
+                    list.Add(Path.GetFileName(path));
+            }
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list;
+    }
+
+    // Stores a validated WAV as the theme's startup chime (or removes it).
+    internal static void SetChime(string name, byte[] wav)
+    {
+        string folder = Folder(ValidateName(name));
+        bool wave = wav != null && wav.Length > 12 &&
+            wav[0] == 'R' && wav[1] == 'I' && wav[2] == 'F' && wav[3] == 'F' &&
+            wav[8] == 'W' && wav[9] == 'A' && wav[10] == 'V' && wav[11] == 'E';
+        if (!wave) throw new InvalidDataException("Pick a .wav sound file.");
+        WithLock(folder, delegate { ImageCodec.SaveAtomic(Path.Combine(folder, "sound.wav"), wav); });
+    }
+
+    internal static void ClearChime(string name)
+    {
+        string folder = Folder(ValidateName(name));
+        WithLock(folder, delegate { File.Delete(Path.Combine(folder, "sound.wav")); });
+    }
+
+    // Three tiny built-in chimes generated as 16-bit mono PCM WAVs, so a theme
+    // can get a boot sound without hunting for audio files.
+    internal static byte[] ChimeWav(string kind)
+    {
+        const int rate = 22050;
+        short[] pcm;
+        switch (kind)
+        {
+            case "blip":
+            {
+                int n = rate / 3;
+                pcm = new short[n];
+                for (int i = 0; i < n; i++)
+                {
+                    double t = (double)i / rate;
+                    double f = t < 0.12 ? 523.25 : 783.99;
+                    double env = t < 0.02 ? t / 0.02 : Math.Exp(-(t - 0.02) * 14);
+                    pcm[i] = (short)(Math.Sin(2 * Math.PI * f * t) * env * 16000);
+                }
+                break;
+            }
+            case "whoosh":
+            {
+                int n = rate / 2;
+                pcm = new short[n];
+                var rnd = new Random(7);
+                double lp = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    double t = (double)i / (n - 1);
+                    double env = Math.Sin(Math.PI * t);
+                    lp += 0.08 * ((rnd.NextDouble() * 2 - 1) - lp);
+                    pcm[i] = (short)(lp * env * env * 20000);
+                }
+                break;
+            }
+            default:
+            {
+                int n = (int)(rate * 0.9);
+                pcm = new short[n];
+                for (int i = 0; i < n; i++)
+                {
+                    double t = (double)i / rate;
+                    double env = Math.Exp(-t * 5);
+                    double v = Math.Sin(2 * Math.PI * 880 * t) + 0.4 * Math.Sin(2 * Math.PI * 1320 * t) + 0.2 * Math.Sin(2 * Math.PI * 1760 * t);
+                    pcm[i] = (short)(v * env * 9000);
+                }
+                break;
+            }
+        }
+        var ms = new MemoryStream(44 + pcm.Length * 2);
+        var w = new BinaryWriter(ms);
+        w.Write(new[] { 'R', 'I', 'F', 'F' }); w.Write(36 + pcm.Length * 2); w.Write(new[] { 'W', 'A', 'V', 'E' });
+        w.Write(new[] { 'f', 'm', 't', ' ' }); w.Write(16); w.Write((short)1); w.Write((short)1);
+        w.Write(rate); w.Write(rate * 2); w.Write((short)2); w.Write((short)16);
+        w.Write(new[] { 'd', 'a', 't', 'a' }); w.Write(pcm.Length * 2);
+        foreach (short s in pcm) w.Write(s);
+        return ms.ToArray();
     }
 
     // Serializes everything that writes into one settings or theme folder, in every process.
